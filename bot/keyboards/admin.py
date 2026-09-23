@@ -27,7 +27,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
 def admin_categories_kb(categories: list[Category]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for c in categories:
-        mark = "" if c.is_active else "⛔️ "
+        mark = "🟢 " if c.is_active else "🔴 "
         b.button(text=f"📁 {mark}{c.name}", callback_data=f"adm:cat:open:{c.id}")
     b.button(text="➕ Добавить категорию", callback_data="adm:cat:add")
     b.button(text="◀️ Назад", callback_data="adm:menu")
@@ -71,7 +71,7 @@ def category_photo_kb(category_id: int, has_photo: bool) -> InlineKeyboardMarkup
 def admin_products_kb(products: list[Product], category_id: int) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in products:
-        mark = "" if p.is_active else "⛔️ "
+        mark = "🟢 " if p.is_active else "🔴 "
         b.button(text=f"📦 {mark}{p.name}", callback_data=f"adm:prod:open:{p.id}")
     b.button(text="➕ Добавить товар", callback_data=f"adm:prod:add:{category_id}")
     b.button(text="◀️ Назад", callback_data=f"adm:cat:open:{category_id}")
@@ -163,7 +163,7 @@ def digital_items_kb(product_id: int, available: int, total: int) -> InlineKeybo
 def promocodes_list_kb(promos: list[PromoCode]) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     for p in promos:
-        mark = "" if p.is_active else "⛔️ "
+        mark = "🟢 " if p.is_active else "🔴 "
         b.button(text=f"🎟 {mark}{p.code} (-{p.discount_percent}%)", callback_data=f"adm:promo:open:{p.id}")
     b.button(text="➕ Добавить промокод", callback_data="adm:promo:add")
     b.button(text="◀️ Назад", callback_data="adm:menu")
@@ -189,7 +189,18 @@ def promocode_menu_kb(promo: PromoCode) -> InlineKeyboardMarkup:
 def admin_settings_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="🖼 Фото каталога", callback_data="adm:settings:catphoto")
+    b.button(text="🔔 Обязательная подписка", callback_data="adm:settings:sub")
     b.button(text="◀️ Назад", callback_data="adm:menu")
+    b.adjust(1)
+    return b.as_markup()
+
+
+def subscription_settings_kb(is_configured: bool) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    b.button(text="✏️ Указать канал", callback_data="adm:settings:sub:setchannel")
+    if is_configured:
+        b.button(text="🔴 Отключить подписку", callback_data="adm:settings:sub:disable")
+    b.button(text="◀️ Назад", callback_data="adm:settings")
     b.adjust(1)
     return b.as_markup()
 

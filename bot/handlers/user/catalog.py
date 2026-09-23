@@ -14,10 +14,13 @@ from bot.keyboards.user import (
     catalog_kb,
     category_products_kb,
     confirm_purchase_kb,
+    favorites_kb,
+    main_menu_kb,
     product_view_kb,
+    search_results_kb,
 )
-from bot.states.states import PurchaseStates
-from bot.utils.formatting import format_price
+from bot.states.states import PurchaseStates, SearchStates
+from bot.utils.formatting import format_price, stock_line
 from bot.utils.ui import render
 
 logger = logging.getLogger(__name__)
@@ -29,15 +32,15 @@ async def cb_catalog(callback: CallbackQuery, session: AsyncSession) -> None:
     categories = await repo.list_categories(session, only_active=True)
     catalog_photo = await repo.get_setting(session, "catalog_photo_file_id")
     if not categories:
-        await render(callback, "📦 Каталог пока пуст.", catalog_kb(categories), photo=catalog_photo)
+        await render(callback, "🛍 <b>Каталог</b>\n\nПока здесь пусто, загляните чуть позже.", catalog_kb(categories), photo=catalog_photo)
         await callback.answer()
         return
-    await render(
-        callback,
-        "📦 <b>Каталог</b>\n\nВыберите категорию:",
-        catalog_kb(categories),
-        photo=catalog_photo,
+    text = (
+        "🛍 <b>Каталог</b>\n"
+        "─────────────────\n"
+        "Выберите категорию, чтобы посмотреть товары 👇"
     )
+    await render(callback, text, catalog_kb(categories), photo=catalog_photo)
     await callback.answer()
 
 
@@ -49,12 +52,14 @@ async def cb_open_category(callback: CallbackQuery, session: AsyncSession) -> No
         await callback.answer("Категория недоступна", show_alert=True)
         return
     products = await repo.list_products(session, category_id, only_active=True)
-    text = f"📁 <b>{category.name}</b>"
+    text = f"📁 <b>{category.name}</b>\n─────────────────"
     if category.description:
-        text += f"\n\n{category.description}"
+        text += f"\n{category.description}\n─────────────────"
     if not products:
-        text += "\n\nТоваров пока нет."
-    await render(callback, text, category_products_kb(products), photo=category.photo_file_id)
+        text += "\n\nТоваров пока нет, загляните позже 🙂"
+    else:
+        text += f"\n\n📦 Товаров в категории: {len(products)}\nВыберите товар 👇"
+    await render(callback, text, category_products_kb(products, category_id), photo=category.photo_file_id)
     await callback.answer()
 
 
@@ -67,11 +72,13 @@ async def cb_open_product(callback: CallbackQuery, session: AsyncSession, state:
         await callback.answer("Товар недоступен", show_alert=True)
         return
     available = await repo.count_available_items(session, product_id)
+    db_user = await repo.get_user_by_telegram_id(session, callback.from_user.id)
+    is_fav = await repo.is_favorite(session, db_user.id, product_id) if db_user else False
     text = _product_text(product, available)
     await render(
         callback,
         text,
-        product_view_kb(product.id, available > 0, product.category_id),
+        product_view_kb(product.id, available > 0, product.category_id, is_fav),
         photo=product.photo_file_id,
     )
     await callback.answer()
@@ -79,17 +86,98 @@ async def cb_open_product(callback: CallbackQuery, session: AsyncSession, state:
 
 def _product_text(product, available: int, discount_percent: int = 0) -> str:
     price = product.price
-    text = (
-        f"📦 <b>{product.name}</b>\n\n"
-        f"{product.description or ''}\n\n"
-    )
+    text = f"📦 <b>{product.name}</b>\n─────────────────\n"
+    if product.description:
+        text += f"{product.description}\n─────────────────\n"
     if discount_percent:
         final = (price * (Decimal(100 - discount_percent) / Decimal(100))).quantize(Decimal("0.01"))
-        text += f"💰 Цена: <s>{format_price(price)}</s> {format_price(final)} (-{discount_percent}%)\n"
+        text += f"💰 Цена: <s>{format_price(price)}</s> <b>{format_price(final)}</b> (-{discount_percent}%)\n"
     else:
-        text += f"💰 Цена: {format_price(price)}\n"
-    text += f"📦 Наличие: {'В наличии' if available > 0 else '❌ Товар закончился'}\n"
+        text += f"💰 Цена: <b>{format_price(price)}</b>\n"
+    text += stock_line(available)
     return text
+
+
+# --------------------------------------------------------------------------- #
+# Search
+# --------------------------------------------------------------------------- #
+
+
+@router.callback_query(F.data == "menu:search")
+async def cb_search_start(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.set_state(SearchStates.waiting_query)
+    await render(
+        callback,
+        "🔍 <b>Поиск товаров</b>\n─────────────────\nВведите название товара (или часть названия) сообщением:",
+    )
+    await callback.answer()
+
+
+@router.message(SearchStates.waiting_query)
+async def process_search(message: Message, session: AsyncSession, state: FSMContext) -> None:
+    query = (message.text or "").strip()
+    if not query:
+        await message.answer("Введите текст для поиска.")
+        return
+    results = await repo.search_products(session, query)
+    await state.clear()
+    if not results:
+        await message.answer(
+            f"🔍 По запросу «{query}» ничего не найдено.\n\nПопробуйте другой запрос.",
+            reply_markup=search_results_kb([]),
+        )
+        return
+    await message.answer(
+        f"🔍 Найдено товаров: {len(results)}",
+        reply_markup=search_results_kb(results),
+    )
+
+
+# --------------------------------------------------------------------------- #
+# Favorites
+# --------------------------------------------------------------------------- #
+
+
+@router.callback_query(F.data == "menu:favorites")
+async def cb_favorites(callback: CallbackQuery, session: AsyncSession) -> None:
+    db_user = await repo.get_user_by_telegram_id(session, callback.from_user.id)
+    products = await repo.list_favorite_products(session, db_user.id) if db_user else []
+    if not products:
+        await render(
+            callback,
+            "⭐ <b>Избранное</b>\n─────────────────\nПока пусто — добавляйте товары кнопкой «В избранное» на странице товара.",
+            favorites_kb([]),
+        )
+        await callback.answer()
+        return
+    await render(callback, f"⭐ <b>Избранное</b>\n─────────────────\nВсего: {len(products)}", favorites_kb(products))
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith("fav:toggle:"))
+async def cb_favorite_toggle(callback: CallbackQuery, session: AsyncSession) -> None:
+    product_id = int(callback.data.split(":")[2])
+    product = await repo.get_product(session, product_id)
+    if product is None:
+        await callback.answer("Товар не найден", show_alert=True)
+        return
+    db_user = await repo.get_user_by_telegram_id(session, callback.from_user.id)
+    currently_fav = await repo.is_favorite(session, db_user.id, product_id)
+    if currently_fav:
+        await repo.remove_favorite(session, db_user.id, product_id)
+        await callback.answer("💔 Убрано из избранного")
+    else:
+        await repo.add_favorite(session, db_user.id, product_id)
+        await callback.answer("⭐ Добавлено в избранное")
+
+    available = await repo.count_available_items(session, product_id)
+    text = _product_text(product, available)
+    await render(
+        callback,
+        text,
+        product_view_kb(product.id, available > 0, product.category_id, not currently_fav),
+        photo=product.photo_file_id,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -104,7 +192,7 @@ async def cb_promo_enter(callback: CallbackQuery, state: FSMContext) -> None:
     await state.update_data(product_id=product_id)
     await render(
         callback,
-        "🎟 Введите промокод сообщением, или нажмите «Отмена».",
+        "🎟 <b>Промокод</b>\n─────────────────\nВведите промокод сообщением, или нажмите «Отмена».",
     )
     await callback.answer()
 
@@ -121,11 +209,13 @@ async def process_promo(message: Message, session: AsyncSession, state: FSMConte
 
     promo = await repo.get_promocode_by_code(session, message.text or "")
     available = await repo.count_available_items(session, product_id)
+    db_user = await repo.get_user_by_telegram_id(session, message.from_user.id)
+    is_fav = await repo.is_favorite(session, db_user.id, product_id) if db_user else False
 
     if promo is None or not repo.promocode_is_valid(promo):
         await message.answer(
             "❌ Промокод недействителен.\n\n" + _product_text(product, available),
-            reply_markup=product_view_kb(product.id, available > 0, product.category_id),
+            reply_markup=product_view_kb(product.id, available > 0, product.category_id, is_fav),
         )
         await state.clear()
         return

@@ -10,12 +10,17 @@ from aiogram.fsm.storage.memory import MemoryStorage
 
 from bot.config import get_settings
 from bot.database.engine import init_models
-from bot.handlers import payments
+from bot.handlers import payments, subscription
 from bot.handlers.admin import broadcast, categories, digital_items, panel, products, promocodes
 from bot.handlers.admin import settings as admin_settings
 from bot.handlers.admin import stats
 from bot.handlers.user import catalog, orders, profile, start
-from bot.middlewares import DbSessionMiddleware, ErrorLoggingMiddleware, UserRegisterMiddleware
+from bot.middlewares import (
+    DbSessionMiddleware,
+    ErrorLoggingMiddleware,
+    SubscriptionGateMiddleware,
+    UserRegisterMiddleware,
+)
 from bot.utils.logger import setup_logging
 
 logger = logging.getLogger(__name__)
@@ -42,10 +47,15 @@ async def main() -> None:
     # pre_checkout_query, successful_payment, etc.)
     dp.update.middleware(DbSessionMiddleware())
     dp.update.middleware(UserRegisterMiddleware())
+    # Must come after the two above (needs `session` and `event_from_user`
+    # already in data) and before any user-facing router is reached.
+    dp.update.middleware(SubscriptionGateMiddleware())
 
     # Payments must be registered so pre_checkout_query / successful_payment
     # are handled regardless of which router the invoice-sending code lives in.
     dp.include_router(payments.router)
+    # The "Проверить подписку" button — exempted from the gate itself.
+    dp.include_router(subscription.router)
 
     # Admin routers (each internally filtered by IsAdmin — safe to include globally)
     dp.include_router(panel.router)

@@ -16,6 +16,7 @@ from sqlalchemy.orm import selectinload
 from bot.database.models import (
     Category,
     DigitalItem,
+    Favorite,
     Order,
     OrderStatus,
     PromoCode,
@@ -452,3 +453,55 @@ async def set_setting(session: AsyncSession, key: str, value: str) -> None:
 async def delete_setting(session: AsyncSession, key: str) -> None:
     await session.execute(delete(Setting).where(Setting.key == key))
     await session.commit()
+
+
+# --------------------------------------------------------------------------- #
+# Favorites
+# --------------------------------------------------------------------------- #
+
+
+async def is_favorite(session: AsyncSession, user_id: int, product_id: int) -> bool:
+    result = await session.execute(
+        select(Favorite.id).where(Favorite.user_id == user_id, Favorite.product_id == product_id)
+    )
+    return result.scalar_one_or_none() is not None
+
+
+async def add_favorite(session: AsyncSession, user_id: int, product_id: int) -> None:
+    if await is_favorite(session, user_id, product_id):
+        return
+    session.add(Favorite(user_id=user_id, product_id=product_id))
+    await session.commit()
+
+
+async def remove_favorite(session: AsyncSession, user_id: int, product_id: int) -> None:
+    await session.execute(
+        delete(Favorite).where(Favorite.user_id == user_id, Favorite.product_id == product_id)
+    )
+    await session.commit()
+
+
+async def list_favorite_products(session: AsyncSession, user_id: int) -> list[Product]:
+    result = await session.execute(
+        select(Product)
+        .join(Favorite, Favorite.product_id == Product.id)
+        .where(Favorite.user_id == user_id)
+        .order_by(Favorite.created_at.desc())
+    )
+    return list(result.scalars().all())
+
+
+# --------------------------------------------------------------------------- #
+# Search
+# --------------------------------------------------------------------------- #
+
+
+async def search_products(session: AsyncSession, query: str, limit: int = 20) -> list[Product]:
+    like = f"%{query.strip().lower()}%"
+    result = await session.execute(
+        select(Product)
+        .where(Product.is_active.is_(True), func.lower(Product.name).like(like))
+        .order_by(Product.name)
+        .limit(limit)
+    )
+    return list(result.scalars().all())

@@ -18,10 +18,14 @@ async def cb_orders(callback: CallbackQuery, session: AsyncSession) -> None:
     db_user = await repo.get_user_by_telegram_id(session, callback.from_user.id)
     orders = await repo.get_user_orders(session, db_user.id) if db_user else []
     if not orders:
-        await render(callback, "🧾 У вас пока нет заказов.", back_kb())
+        await render(
+            callback,
+            "🧾 <b>Мои заказы</b>\n─────────────────\nПока пусто — самое время заглянуть в каталог 🛍",
+            back_kb(),
+        )
         await callback.answer()
         return
-    await render(callback, "🧾 <b>Мои заказы</b>", orders_list_kb(orders))
+    await render(callback, f"🧾 <b>Мои заказы</b>\n─────────────────\nВсего: {len(orders)}", orders_list_kb(orders))
     await callback.answer()
 
 
@@ -35,7 +39,8 @@ async def cb_order_detail(callback: CallbackQuery, session: AsyncSession) -> Non
         return
 
     text = (
-        f"🧾 <b>Заказ #{order.id}</b>\n\n"
+        f"🧾 <b>Заказ #{order.id}</b>\n"
+        f"─────────────────\n"
         f"📦 Товар: {order.product_name}\n"
         f"💰 Цена: {format_price(order.price)}\n"
         f"📊 Статус: {status_label(order.status)}\n"
@@ -43,6 +48,6 @@ async def cb_order_detail(callback: CallbackQuery, session: AsyncSession) -> Non
     if order.digital_item_id:
         item = await session.get(DigitalItem, order.digital_item_id)
         if item:
-            text += f"\n🔑 Ваш товар:\n<code>{item.content}</code>"
+            text += f"─────────────────\n🔑 Ваш товар:\n<code>{item.content}</code>"
     await render(callback, text, back_kb("menu:orders"))
     await callback.answer()

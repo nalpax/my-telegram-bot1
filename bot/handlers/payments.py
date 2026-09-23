@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.config import get_settings
 from bot.database import repo
 from bot.database.models import OrderStatus
-from bot.keyboards.user import main_menu_kb
+from bot.keyboards.user import post_purchase_kb
 from bot.utils.formatting import format_price
 
 logger = logging.getLogger(__name__)
@@ -104,11 +104,16 @@ async def process_successful_payment(message: Message, session: AsyncSession) ->
 
     logger.info("Order %s completed, digital item %s delivered", order.id, item.id)
 
-    is_admin = message.from_user.id in settings.admin_id_list
+    product = await repo.get_product(session, order.product_id) if order.product_id else None
+    category_id = product.category_id if product else 0
     await message.answer(
-        f"✅ <b>Оплата успешна!</b>\n\n"
+        f"🎉 <b>Оплата прошла успешно!</b>\n"
+        f"─────────────────\n"
         f"📦 Товар: {order.product_name}\n"
-        f"💰 Сумма: {format_price(order.price)}\n\n"
-        f"🔑 Ваш товар:\n<code>{item.content}</code>",
-        reply_markup=main_menu_kb(is_admin),
+        f"💰 Сумма: {format_price(order.price)}\n"
+        f"🧾 Заказ: #{order.id}\n"
+        f"─────────────────\n"
+        f"🔑 Ваш товар:\n<code>{item.content}</code>\n\n"
+        f"Спасибо за покупку! 🙌",
+        reply_markup=post_purchase_kb(category_id),
     )

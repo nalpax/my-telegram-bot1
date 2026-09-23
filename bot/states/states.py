@@ -42,3 +42,12 @@ class CatalogPhotoStates(StatesGroup):
 
 class PurchaseStates(StatesGroup):
     waiting_promo = State()
+
+
+class SubscriptionSettingsStates(StatesGroup):
+    waiting_channel = State()
+    waiting_url = State()
+
+
+class SearchStates(StatesGroup):
+    waiting_query = State()

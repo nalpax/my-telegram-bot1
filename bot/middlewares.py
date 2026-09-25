@@ -20,7 +20,7 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware
 from aiogram.exceptions import TelegramBadRequest
-from aiogram.types import CallbackQuery, Message, PreCheckoutQuery, TelegramObject, Update
+from aiogram.types import CallbackQuery, Message, TelegramObject, Update
 
 from bot.config import get_settings
 from bot.database.engine import async_session_factory
@@ -79,10 +79,27 @@ async def check_subscription(bot, session, telegram_id: int) -> bool | None:
     except Exception:  # noqa: BLE001
         logger.exception("Unexpected error checking channel subscription")
         return None
+    if member.status == "restricted":
+        return bool(getattr(member, "is_member", False))
     return member.status not in ("left", "kicked")
 
 
+def _unwrap(event: TelegramObject) -> TelegramObject | None:
+    """Update-level middlewares receive the Update wrapper — get the actual event."""
+    if isinstance(event, Update):
+        return event.event
+    return event
+
+
 class SubscriptionGateMiddleware(BaseMiddleware):
+    """
+    Registered at the Update level, so it sees every update. Only private
+    messages and callback queries are gated; payments, chat-member updates
+    etc. always pass (a payment must never be blocked half-way).
+
+    Also silently drops everything from banned users.
+    """
+
     _EXEMPT_CALLBACK_DATA = {"subcheck:verify"}
 
     async def __call__(
@@ -94,23 +111,28 @@ class SubscriptionGateMiddleware(BaseMiddleware):
         user = data.get("event_from_user")
         session = data.get("session")
         bot = data.get("bot")
+        inner = _unwrap(event)
 
         if user is None or session is None or bot is None:
+            return await handler(event, data)
+        if not isinstance(inner, (Message, CallbackQuery)):
+            return await handler(event, data)
+        if isinstance(inner, Message) and (
+            inner.successful_payment is not None or inner.chat.type != "private"
+        ):
             return await handler(event, data)
 
         settings = get_settings()
         if user.id in settings.admin_id_list:
             return await handler(event, data)
 
-        # Never gate payment events — by the time a user reaches checkout
-        # they already passed the gate to open the catalog.
-        if isinstance(event, PreCheckoutQuery):
-            return await handler(event, data)
-        if isinstance(event, Message) and event.successful_payment is not None:
-            return await handler(event, data)
+        db_user = data.get("db_user")
+        if db_user is not None and db_user.is_banned:
+            if isinstance(inner, CallbackQuery):
+                await _safe_answer(inner, "⛔️ Доступ к магазину ограничен.", show_alert=True)
+            return None
 
-        cb_data = event.data if isinstance(event, CallbackQuery) else None
-        if cb_data in self._EXEMPT_CALLBACK_DATA:
+        if isinstance(inner, CallbackQuery) and inner.data in self._EXEMPT_CALLBACK_DATA:
             return await handler(event, data)
 
         subscribed = await check_subscription(bot, session, user.id)
@@ -131,9 +153,11 @@ class SubscriptionGateMiddleware(BaseMiddleware):
             "Чтобы пользоваться магазином, подпишитесь на наш канал и нажмите "
             "«Проверить подписку»."
         )
-        chat_id = event.message.chat.id if isinstance(event, CallbackQuery) else event.chat.id
-        if isinstance(event, CallbackQuery):
-            await event.answer()
+        if isinstance(inner, CallbackQuery):
+            await _safe_answer(inner)
+            chat_id = inner.message.chat.id if inner.message else user.id
+        else:
+            chat_id = inner.chat.id
         try:
             await bot.send_message(chat_id, text, reply_markup=subscription_gate_kb(channel_url))
         except Exception:  # noqa: BLE001
@@ -141,8 +165,19 @@ class SubscriptionGateMiddleware(BaseMiddleware):
         return None
 
 
+async def _safe_answer(callback: CallbackQuery, text: str | None = None, show_alert: bool = False) -> None:
+    try:
+        await callback.answer(text, show_alert=show_alert)
+    except Exception:  # noqa: BLE001 - query may be too old to answer
+        pass
+
+
 class ErrorLoggingMiddleware(BaseMiddleware):
-    """Catches any exception that escapes a handler so the bot never crashes."""
+    """
+    Catches any exception that escapes a handler so the bot never crashes,
+    and tells the user something went wrong instead of leaving a button
+    spinning forever.
+    """
 
     async def __call__(
         self,
@@ -153,5 +188,13 @@ class ErrorLoggingMiddleware(BaseMiddleware):
         try:
             return await handler(event, data)
         except Exception:  # noqa: BLE001
-            logger.exception("Unhandled error while processing update: %s", event)
+            logger.exception("Unhandled error while processing update %s", getattr(event, "update_id", "?"))
+            inner = _unwrap(event)
+            try:
+                if isinstance(inner, CallbackQuery):
+                    await _safe_answer(inner, "⚠️ Что-то пошло не так. Попробуйте ещё раз.", show_alert=True)
+                elif isinstance(inner, Message) and inner.chat.type == "private":
+                    await inner.answer("⚠️ Что-то пошло не так. Попробуйте ещё раз или нажмите /start.")
+            except Exception:  # noqa: BLE001
+                pass
             return None

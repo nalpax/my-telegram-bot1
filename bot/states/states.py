@@ -51,3 +51,11 @@ class SubscriptionSettingsStates(StatesGroup):
 
 class SearchStates(StatesGroup):
     waiting_query = State()
+
+
+class UserSearchStates(StatesGroup):
+    waiting_query = State()
+
+
+class TextSettingStates(StatesGroup):
+    waiting_value = State()

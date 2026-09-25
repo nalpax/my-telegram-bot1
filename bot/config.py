@@ -35,6 +35,7 @@ class Settings(BaseSettings):
     # Misc
     log_level: str = "INFO"
     broadcast_delay_seconds: float = 0.05
+    notify_admins_on_sale: bool = True
 
     @property
     def admin_id_list(self) -> list[int]:

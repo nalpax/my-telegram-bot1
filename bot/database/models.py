@@ -35,6 +35,7 @@ class OrderStatus(str, enum.Enum):
     completed = "completed"
     cancelled = "cancelled"
     failed = "failed"
+    refunded = "refunded"
 
 
 class User(Base):
@@ -137,6 +138,11 @@ class Order(Base):
     digital_item_id: Mapped[int | None] = mapped_column(
         ForeignKey("digital_items.id", ondelete="SET NULL"), nullable=True
     )
+    # Snapshot of what the buyer received — survives deletion of the product
+    # (which cascades to its digital items), so "Мои заказы" never loses a key.
+    delivered_content: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # telegram_payment_charge_id — needed to refund Telegram Stars payments.
+    charge_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     paid_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 

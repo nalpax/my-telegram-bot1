@@ -27,6 +27,7 @@ services:
       PAYMENT_PROVIDER_TOKEN: ${PAYMENT_PROVIDER_TOKEN:-}
       CURRENCY: ${CURRENCY:-RUB}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      NOTIFY_ADMINS_ON_SALE: ${NOTIFY_ADMINS_ON_SALE:-true}
 
 volumes:
   pgdata:

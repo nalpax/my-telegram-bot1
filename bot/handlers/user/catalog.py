@@ -331,6 +331,17 @@ async def cb_buy(callback: CallbackQuery, session: AsyncSession, state: FSMConte
         )
         return
 
+    if not settings.payments_enabled:
+        # Payment provider isn't connected yet — don't leave an unpayable order behind.
+        await repo.set_order_status(session, order.id, OrderStatus.cancelled)
+        contact = await repo.get_setting(session, "support_contact")
+        await callback.answer(
+            "💳 Онлайн-оплата скоро будет доступна."
+            + (f"\nЧтобы купить сейчас, напишите: {contact}" if contact else ""),
+            show_alert=True,
+        )
+        return
+
     title = product.name[:32] or "Товар"
     description = strip_html(product.description)[:255] or product.name[:255]
     try:

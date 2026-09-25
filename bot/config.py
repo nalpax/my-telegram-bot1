@@ -51,6 +51,11 @@ class Settings(BaseSettings):
         return self.currency.upper() == "XTR"
 
     @property
+    def payments_enabled(self) -> bool:
+        """Stars need no provider token; any other currency does."""
+        return self.uses_stars or bool(self.payment_provider_token)
+
+    @property
     def effective_database_url(self) -> str:
         if self.database_url:
             return self.database_url

@@ -11,6 +11,7 @@ from bot.utils.formatting import STATUS_EMOJI, format_price
 def admin_menu_kb() -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
     b.button(text="📦 Товары", callback_data="adm:cat:list")
+    b.button(text="💰 Цены", callback_data="adm:prices")
     b.button(text="📊 Статистика", callback_data="adm:stats")
     b.button(text="🧾 Заказы", callback_data="adm:orders")
     b.button(text="🎟 Промокоды", callback_data="adm:promo:list")
@@ -18,7 +19,7 @@ def admin_menu_kb() -> InlineKeyboardMarkup:
     b.button(text="👥 Пользователи", callback_data="adm:users")
     b.button(text="⚙️ Настройки", callback_data="adm:settings")
     b.button(text="◀️ В меню", callback_data="back:main")
-    b.adjust(2, 2, 2, 1, 1)
+    b.adjust(2, 2, 2, 2, 1)
     return b.as_markup()
 
 
@@ -89,12 +90,13 @@ def admin_products_kb(products: list[Product], category_id: int, page: int = 0) 
 
 def admin_product_menu_kb(product: Product) -> InlineKeyboardMarkup:
     b = InlineKeyboardBuilder()
+    b.button(text="💰 Изменить цену", callback_data=f"adm:prod:editprice:{product.id}")
     b.button(text="✏️ Изменить", callback_data=f"adm:prod:edit:{product.id}")
     b.button(text="🖼 Фото", callback_data=f"adm:prod:photo:{product.id}")
     b.button(text="📦 Позиции", callback_data=f"adm:items:{product.id}")
     b.button(text="🗑 Удалить", callback_data=f"adm:prod:delconfirm:{product.id}")
     b.button(text="◀️ Назад", callback_data=f"adm:prod:list:{product.category_id}")
-    b.adjust(2, 2, 1)
+    b.adjust(1, 2, 2, 1)
     return b.as_markup()
 
 
@@ -321,4 +323,18 @@ def admin_user_kb(user: User) -> InlineKeyboardMarkup:
     b.button(text="🔍 Найти другого", callback_data="adm:users")
     b.button(text="◀️ В админ-панель", callback_data="adm:menu")
     b.adjust(1)
+    return b.as_markup()
+
+
+def admin_prices_kb(products: list[Product], page: int = 0) -> InlineKeyboardMarkup:
+    b = InlineKeyboardBuilder()
+    chunk, page, pages = paginate(products, page, size=10)
+    for p in chunk:
+        mark = "" if p.is_active else "🔴 "
+        b.button(text=f"{mark}{p.name} — {format_price(p.price)}", callback_data=f"adm:prices:set:{p.id}")
+    b.adjust(1)
+    nav = nav_row(page, pages, "adm:prices")
+    if nav:
+        b.row(*nav)
+    b.row(InlineKeyboardButton(text="◀️ Назад", callback_data="adm:menu"))
     return b.as_markup()

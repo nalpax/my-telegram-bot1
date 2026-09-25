@@ -12,7 +12,7 @@ from aiogram.types import BotCommand, BotCommandScopeChat, BotCommandScopeDefaul
 from bot.config import get_settings
 from bot.database.engine import init_models
 from bot.handlers import fallback, payments, subscription
-from bot.handlers.admin import broadcast, categories, digital_items, panel, products, promocodes, users
+from bot.handlers.admin import broadcast, categories, digital_items, panel, prices, products, promocodes, users
 from bot.handlers.admin import settings as admin_settings
 from bot.handlers.admin import stats
 from bot.handlers.user import catalog, orders, profile, start
@@ -54,8 +54,8 @@ async def main() -> None:
         logger.warning("ADMIN_IDS is empty in .env — nobody will be able to open the admin panel.")
     if not settings.uses_stars and not settings.payment_provider_token:
         logger.warning(
-            "PAYMENT_PROVIDER_TOKEN is empty but CURRENCY=%s — invoices will fail. "
-            "Set a provider token or use CURRENCY=XTR (Telegram Stars).",
+            "PAYMENT_PROVIDER_TOKEN is empty and CURRENCY=%s — payments are disabled, buyers "
+            "will see 'оплата скоро будет доступна'. Set a provider token or use CURRENCY=XTR.",
             settings.currency,
         )
 
@@ -93,6 +93,7 @@ async def main() -> None:
     dp.include_router(stats.router)
     dp.include_router(admin_settings.router)
     dp.include_router(users.router)
+    dp.include_router(prices.router)
 
     # User-facing routers
     dp.include_router(start.router)

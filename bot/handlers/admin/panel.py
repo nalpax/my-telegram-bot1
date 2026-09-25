@@ -6,6 +6,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.config import get_settings
 from bot.database import repo
 from bot.database.models import OrderStatus
 from bot.filters.admin import IsAdmin
@@ -18,19 +19,28 @@ router = Router(name="admin_panel")
 router.message.filter(IsAdmin())
 router.callback_query.filter(IsAdmin())
 
-ADMIN_TEXT = "🛠 <b>Админ-панель</b>\n\nВыберите раздел:"
+_ADMIN_TEXT = "🛠 <b>Админ-панель</b>\n\nВыберите раздел:"
+
+
+def admin_text() -> str:
+    if get_settings().payments_enabled:
+        return _ADMIN_TEXT
+    return (
+        _ADMIN_TEXT + "\n\n⚠️ Оплата не подключена: покупатели видят «оплата скоро будет доступна». "
+        "Укажите PAYMENT_PROVIDER_TOKEN или CURRENCY=XTR (Telegram Stars) в .env."
+    )
 
 
 @router.message(Command("admin"))
 async def cmd_admin(message: Message, state: FSMContext) -> None:
     await state.clear()
-    await message.answer(ADMIN_TEXT, reply_markup=admin_menu_kb())
+    await message.answer(admin_text(), reply_markup=admin_menu_kb())
 
 
 @router.callback_query(F.data == "adm:menu")
 async def cb_admin_menu(callback: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
-    await render(callback, ADMIN_TEXT, admin_menu_kb())
+    await render(callback, admin_text(), admin_menu_kb())
     await callback.answer()
 
 

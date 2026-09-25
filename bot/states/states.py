@@ -59,3 +59,7 @@ class UserSearchStates(StatesGroup):
 
 class TextSettingStates(StatesGroup):
     waiting_value = State()
+
+
+class PriceListStates(StatesGroup):
+    waiting_price = State()

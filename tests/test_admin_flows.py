@@ -21,7 +21,7 @@ CHAT = Chat(id=1, type="private")
 def dp() -> Dispatcher:
     from bot.handlers import fallback, payments, subscription
     from bot.handlers.admin import (
-        broadcast, categories, digital_items, panel, products, promocodes, settings, stats, users,
+        broadcast, categories, digital_items, panel, prices, products, promocodes, settings, stats, users,
     )
     from bot.handlers.user import catalog, orders, profile, start
     from bot.middlewares import (
@@ -35,7 +35,7 @@ def dp() -> Dispatcher:
     d.update.middleware(SubscriptionGateMiddleware())
     for module in (
         payments, subscription, panel, categories, products, digital_items, promocodes, broadcast, stats,
-        settings, users, start, catalog, orders, profile, fallback,
+        settings, users, prices, start, catalog, orders, profile, fallback,
     ):
         module.router._parent_router = None
         d.include_router(module.router)
@@ -86,6 +86,7 @@ async def test_admin_walkthrough(dp, bot, fake_session, caplog):
 
     pid = product.id
     steps = [
+        cb("adm:prices"), cb(f"adm:prices:set:{pid}"), msg("не число"), msg("1 500 руб"),
         cb(f"adm:items:{pid}"), cb(f"adm:prod:list:{cat.id}"), cb(f"adm:prod:open:{pid}"), cb(f"adm:prod:edit:{pid}"),
         cb(f"adm:prod:editprice:{pid}"), msg("20"), cb(f"adm:prod:editdesc:{pid}"), msg("новое <описание>"),
         cb(f"adm:prod:toggle:{pid}"), cb(f"adm:prod:toggle:{pid}"), cb(f"adm:prod:editcat:{pid}"),
@@ -109,6 +110,36 @@ async def test_admin_walkthrough(dp, bot, fake_session, caplog):
     assert_no_errors(fake_session)
     async with async_session_factory() as s:
         assert (await repo.get_setting(s, "support_contact")) == "@help_me"
+        assert (await repo.get_product(s, pid)) is None  # deleted at the end
         assert (await repo.get_promocode_by_code(s, "SALE10")) is not None
         assert not (await repo.get_user_by_telegram_id(s, 1)).is_banned  # admins can't be banned
     assert fake_session.sent("CopyMessage")  # broadcast went out
+
+
+async def test_admin_sets_price_and_buy_without_payments(dp, bot, fake_session, monkeypatch):
+    from decimal import Decimal
+
+    from bot.config import get_settings
+
+    async with async_session_factory() as s:
+        cat = await repo.create_category(s, "Софт")
+        product = await repo.create_product(s, cat.id, "Ключ", "", Decimal("10"))
+        await repo.add_digital_items(s, product.id, ["K1"])
+
+    for u in (cb("adm:prices"), cb(f"adm:prices:set:{product.id}"), msg("250 руб")):
+        await dp.feed_update(bot, u)
+    async with async_session_factory() as s:
+        assert (await repo.get_product(s, product.id)).price == Decimal("250")
+
+    settings = get_settings()
+    monkeypatch.setattr(settings, "currency", "RUB")
+    monkeypatch.setattr(settings, "payment_provider_token", "")
+    buyer = User(id=555, is_bot=False, first_name="B")
+    m = Message(message_id=next(_ids), date=datetime.now(timezone.utc), chat=Chat(id=555, type="private"), text="x")
+    q = CallbackQuery(id="q1", from_user=buyer, chat_instance="x", message=m, data=f"buy:{product.id}")
+    await dp.feed_update(bot, Update(update_id=next(_ids), callback_query=q))
+
+    assert not fake_session.sent("SendInvoice")
+    alert = fake_session.sent("AnswerCallbackQuery")[-1]
+    assert "скоро будет доступна" in alert.text
+    assert_no_errors(fake_session)

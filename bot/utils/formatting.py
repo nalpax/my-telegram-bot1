@@ -61,7 +61,12 @@ def normalize_price(amount: Decimal) -> Decimal:
 
 def parse_price(raw: str | None) -> Decimal | None:
     """Parse an admin-entered price. Returns None if it isn't a sane positive number."""
-    text = (raw or "").strip().replace(",", ".").replace(" ", "")
+    # Accept "199", "199.90", "199,90", "1 500", "199 руб", "199₽", "50⭐".
+    if "-" in (raw or ""):
+        return None
+    text = re.sub(r"[^0-9.,]", "", (raw or "").strip()).replace(",", ".")
+    if text.count(".") > 1:
+        return None
     if not text:
         return None
     try:

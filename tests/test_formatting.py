@@ -18,8 +18,14 @@ def test_parse_price_stars_rounds_to_integer():
 
 
 def test_parse_price_rejects_garbage():
-    for raw in ("", "abc", "-5", "0", "NaN", "Infinity", "1e30", None):
+    for raw in ("", "abc", "-5", "0", "NaN", "Infinity", "1.2.3", "99999999999", None):
         assert parse_price(raw) is None
+
+
+def test_parse_price_accepts_human_input():
+    assert parse_price("199 руб") == Decimal("199")
+    assert parse_price("1 500₽") == Decimal("1500")
+    assert parse_price("50⭐") == Decimal("50")
 
 
 def test_invoice_amount_stars():

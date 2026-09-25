@@ -205,6 +205,15 @@ async def list_products(
     return list(result.scalars().all())
 
 
+async def list_all_products(session: AsyncSession) -> list[Product]:
+    result = await session.execute(
+        select(Product)
+        .join(Category, Category.id == Product.category_id)
+        .order_by(Category.sort_order, Category.id, Product.sort_order, Product.id)
+    )
+    return list(result.scalars().all())
+
+
 async def get_product(session: AsyncSession, product_id: int) -> Product | None:
     return await session.get(Product, product_id)
 

@@ -1,0 +1,24 @@
+[Unit]
+Description=Gift Radar read-only Telegram analytics
+Wants=network-online.target
+After=network-online.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=gift-radar
+Group=gift-radar
+WorkingDirectory=/opt/my-telegram-bot1
+EnvironmentFile=/etc/gift-radar.env
+ExecStart=/opt/my-telegram-bot1/.venv/bin/python -m gift_radar bot
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=45
+KillSignal=SIGINT
+NoNewPrivileges=true
+PrivateTmp=true
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

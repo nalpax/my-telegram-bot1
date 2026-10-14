@@ -1,32 +1,15 @@
 services:
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER:-shop}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-shop}
-      POSTGRES_DB: ${POSTGRES_DB:-shop}
-    volumes:
-      - pgdata:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-shop}"]
-      interval: 5s
-      timeout: 5s
-      retries: 10
-
   bot:
     build: .
     restart: unless-stopped
-    depends_on:
-      db:
-        condition: service_healthy
     environment:
-      BOT_TOKEN: ${BOT_TOKEN}
-      ADMIN_IDS: ${ADMIN_IDS}
-      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-shop}:${POSTGRES_PASSWORD:-shop}@db:5432/${POSTGRES_DB:-shop}
-      PAYMENT_PROVIDER_TOKEN: ${PAYMENT_PROVIDER_TOKEN:-}
-      CURRENCY: ${CURRENCY:-RUB}
-      LOG_LEVEL: ${LOG_LEVEL:-INFO}
-
-volumes:
-  pgdata:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      BOT_TOKEN: ${BOT_TOKEN:-}
+      DATA_DIR: /app/data
+      GIFT_RADAR_LOG_DIR: /app/data/logs
+      GIFT_RADAR_SCAN_SECONDS: ${GIFT_RADAR_SCAN_SECONDS:-300}
+      GIFT_RADAR_RETENTION_DAYS: ${GIFT_RADAR_RETENTION_DAYS:-90}
+    volumes:
+      - ./data:/app/data
+    stop_signal: SIGINT
+    stop_grace_period: 45s

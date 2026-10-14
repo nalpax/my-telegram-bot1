@@ -4,14 +4,16 @@ from contextlib import suppress
 from dataclasses import replace
 from decimal import Decimal
 
-from telegram import InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard, ReplyKeyboardRemove, Update
-from telegram.ext import Application, CallbackQueryHandler, CommandHandler, MessageHandler, filters
+from telegram import (BotCommandScopeAllPrivateChats, BotCommandScopeChat, BotCommandScopeDefault,
+                      InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard, ReplyKeyboardRemove, Update)
+from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, MessageHandler, TypeHandler, filters
 from telegram.request import HTTPXRequest
 
 from .analytics import Rate
 from .models import CURRENCIES, FEE_NAMES, MARKETS, Fee, utcnow
 from .presentation import FEE_LABELS, comparison, render_card, settings_text, text
 from .storage import listing_key
+from .security import contains_secret, erase_input, is_admin, private_admin
 
 log = logging.getLogger(__name__)
 FIELDS = {"min_profit": "💰 Мин. прибыль", "min_roi": "📈 Мин. ROI %", "max_price": "🏷 Макс. цена",
@@ -24,6 +26,10 @@ HELP = ("Бот анализирует данные и уведомляет, п�
         "/favorites — избранное; /fees — расходы по маршруту; /currency — валюты и курсы; /status — состояние.\n"
         "/cancel — отменить ввод; /delete_me — удалить мои настройки и избранное.\n"
         "Площадки пока не подключены: требуется подтверждённый официальный доступ. Цены активных лотов не используются вместо завершённых продаж.")
+BOT_COMMANDS = [("start", "Начало"), ("help", "Помощь"), ("settings", "Настройки"), ("markets", "Площадки"),
+                ("scan", "Просмотр аналитики"), ("alerts", "Уведомления"), ("favorites", "Избранное"),
+                ("fees", "Расходы"), ("currency", "Валюты"), ("status", "Состояние"),
+                ("cancel", "Отменить ввод"), ("id", "Мой ID")]
 
 
 def keyboard(items, width=2, *, back=None, home=False):
@@ -70,6 +76,8 @@ def card_buttons(gift):
 
 
 async def send_card(bot, user, value, settings, store):
+    if not is_admin(user):
+        raise PermissionError("Administrator access required")
     # Split on lines, never inside an HTML tag/entity. Keep each Telegram message <4096.
     body = render_card(value, settings, store, user=user)
     chunks, current = [], ""
@@ -80,7 +88,10 @@ async def send_card(bot, user, value, settings, store):
         current += line + "\n"
     chunks.append(current)
     for i, chunk in enumerate(chunks):
+        if not is_admin(user):
+            raise PermissionError("Administrator access revoked")
         await bot.send_message(chat_id=user, text=chunk, parse_mode="HTML", disable_web_page_preview=True,
+                               protect_content=True,
                                reply_markup=card_buttons(value.listing) if i == len(chunks)-1 else None)
 
 
@@ -88,15 +99,27 @@ class Interface:
     def __init__(self, store, radar):
         self.store, self.radar = store, radar
         self.last_scan = {}
+        self.commands_ready = set()
         from .market_ui import MarketInterface
         self.markets = MarketInterface(self)
 
     async def reply(self, update, message, markup=None):
-        await update.effective_message.reply_text(message, reply_markup=markup, disable_web_page_preview=True)
+        if not private_admin(update):
+            return
+        await update.effective_message.reply_text(message, reply_markup=markup, disable_web_page_preview=True, protect_content=True)
+
+    async def register_commands(self, user, bot):
+        if user in self.commands_ready or not is_admin(user):
+            return
+        try:
+            await bot.set_my_commands(BOT_COMMANDS, scope=BotCommandScopeChat(user))
+        except Exception as exc:
+            log.warning("private_command_menu_failure category=%s", type(exc).__name__)
+        else:
+            self.commands_ready.add(user)
 
     async def command(self, update, context):
-        if update.effective_chat.type != "private":
-            await self.reply(update, "Настройте бота в личном чате.")
+        if not private_admin(update):
             return
         cmd = update.effective_message.text.split()[0].split("@")[0][1:]
         if cmd == "cancel":
@@ -107,6 +130,8 @@ class Interface:
         await self.action(cmd, update, context)
 
     async def action(self, cmd, update, context):
+        if not private_admin(update):
+            return
         user = update.effective_user.id
         settings = self.store.settings(user)
         if cmd == "start":
@@ -192,9 +217,11 @@ class Interface:
             await self.reply(update, "Это действие из прежнего меню. Отправьте /start, чтобы открыть Gift Radar.", MENU)
 
     async def callback(self, update, context):
+        if not private_admin(update):
+            return
         query = update.callback_query
         await query.answer()
-        if update.effective_chat.type != "private":
+        if not private_admin(update):
             return
         user = update.effective_user.id
         data = query.data
@@ -212,7 +239,7 @@ class Interface:
                 lines = [f"{text(k)}: {text(gift.provenance[k])}" for k in
                          ("collection", "model", "backdrop", "pattern", "symbol", "serial", "rare", "signature", "signature_text") if k in gift.provenance]
                 for i in range(0, max(1,len(lines)), 3):
-                    await update.effective_message.reply_text("<b>🔎 Происхождение свойств</b>\n" + "\n".join(lines[i:i+3]), parse_mode="HTML",
+                    await update.effective_message.reply_text("<b>🔎 Происхождение свойств</b>\n" + "\n".join(lines[i:i+3]), parse_mode="HTML", protect_content=True,
                                                               reply_markup=keyboard([], back=f"compare:{value}", home=True))
                 values = self.radar.analyses(user, key=value)
                 if not values or not values[0].sales:
@@ -232,7 +259,7 @@ class Interface:
                 if not values:
                     await self.reply(update, f"Статус лота: {gift.status}. Активная оценка недоступна.", keyboard([], back="favorites", home=True))
                     return
-                await update.effective_message.reply_text("<b>⚖️ Сравнение площадок</b>\n" + "\n".join(comparison(v) for v in values), parse_mode="HTML",
+                await update.effective_message.reply_text("<b>⚖️ Сравнение площадок</b>\n" + "\n".join(comparison(v) for v in values), parse_mode="HTML", protect_content=True,
                                                           reply_markup=keyboard([], back="scan", home=True))
                 await send_card(context.bot, user, values[0], self.store.settings(user), self.store)
             else:
@@ -373,7 +400,17 @@ class Interface:
         await self.reply(update, "\n".join(lines), keyboard([("✏️ " + label, f"fee:{name}") for name, label in FEE_LABELS.items()], back="route_currency_menu", home=True))
 
     async def input(self, update, context):
-        if update.effective_chat.type != "private":
+        if not private_admin(update):
+            return
+        try:
+            await self.process_input(update, context)
+        finally:
+            await erase_input(update)
+
+    async def process_input(self, update, context):
+        names = [self.store.connection(market).key_env for market in MARKETS]
+        if contains_secret(update.effective_message.text, names):
+            await self.reply(update, "🔒 Не присылай ключи или токены сообщением. Сохрани секрет на хостинге; здесь принимается только имя переменной.", input_navigation(context))
             return
         if "awaiting" not in context.user_data:
             await self.reply(update, "Выберите действие в меню.", MENU)
@@ -415,12 +452,37 @@ class Interface:
             await self.reply(update, "⚠️ Некорректное значение. Проверьте диапазон и формат; повторите ввод или нажмите «Назад».", navigation)
 
     async def document(self, update, context):
-        await self.markets.document(update, context)
+        if not private_admin(update):
+            return
+        try:
+            await self.markets.document(update, context)
+        finally:
+            await erase_input(update)
 
 
 def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=None, polling_request=None):
     ui = Interface(store, radar)
     worker = None
+
+    async def authorize(update, context):
+        if private_admin(update):
+            await ui.register_commands(update.effective_user.id, context.bot)
+            return
+        if update.effective_user:
+            context.user_data.clear()
+        try:
+            if update.callback_query:
+                await update.callback_query.answer("🔒 Доступ только администратору в личном чате.", show_alert=True)
+            elif (update.effective_message and update.effective_chat and update.effective_user and
+                  update.effective_chat.type == "private" and update.effective_chat.id == update.effective_user.id):
+                await update.effective_message.reply_text(
+                    f"🔒 Доступ закрыт. Бот доступен только администратору.\nТвой Telegram ID: {update.effective_user.id}",
+                    protect_content=True)
+        except Exception:
+            pass
+        finally:
+            # A failed Telegram denial response MUST NOT allow later handlers to execute.
+            raise ApplicationHandlerStop
 
     async def sender(user, value):
         await send_card(app.bot, user, value, store.settings(user), store)
@@ -438,10 +500,15 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
 
     async def startup(application):
         nonlocal worker
-        await application.bot.set_my_commands([(name, label) for name, label in
-            [("start", "Начало"), ("help", "Помощь"), ("settings", "Настройки"), ("markets", "Площадки"),
-             ("scan", "Просмотр аналитики"), ("alerts", "Уведомления"), ("favorites", "Избранное"),
-             ("fees", "Расходы"), ("currency", "Валюты"), ("status", "Состояние"), ("cancel", "Отменить ввод"), ("id", "Мой ID")]])
+        await application.bot.delete_my_commands(scope=BotCommandScopeDefault())
+        await application.bot.delete_my_commands(scope=BotCommandScopeAllPrivateChats())
+        for user in store.users():
+            if not is_admin(user):
+                try:
+                    await application.bot.delete_my_commands(scope=BotCommandScopeChat(user))
+                except Exception as exc:
+                    log.warning("revoked_command_menu_cleanup_failure category=%s", type(exc).__name__)
+        # Admin menus are registered for their private chats after verified updates.
         worker = asyncio.create_task(work())
 
     async def stop(application):
@@ -452,7 +519,7 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
 
     async def on_error(update, context):
         log.warning("telegram_handler_failure category=%s", type(context.error).__name__)
-        if update and update.effective_message:
+        if update and update.effective_message and private_admin(update):
             try:
                 await ui.reply(update, "Временная ошибка. Повторите действие позже; детали записаны без секретов.")
             except Exception:
@@ -463,6 +530,7 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
     polling_request = polling_request or HTTPXRequest(connect_timeout=10, read_timeout=40)
     app = (Application.builder().token(token).request(request).get_updates_request(polling_request)
            .post_init(startup).post_stop(stop).build())
+    app.add_handler(TypeHandler(Update, authorize), group=-100)
     for name in ("start", "help", "settings", "markets", "scan", "alerts", "favorites", "fees", "currency", "status", "cancel", "delete_me", "id"):
         app.add_handler(CommandHandler(name, ui.command))
     app.add_handler(CallbackQueryHandler(ui.callback))

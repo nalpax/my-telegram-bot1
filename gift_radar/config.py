@@ -3,10 +3,14 @@ import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+from .security import private_file
 
 
 def initialize_environment():
-    load_dotenv(Path.cwd() / ".env", override=False)
+    path = Path.cwd() / ".env"
+    if path.is_file() and os.name == "posix" and path.stat().st_mode & 0o077:
+        private_file(path)
+    load_dotenv(path, override=False)
 
 
 def bot_token():

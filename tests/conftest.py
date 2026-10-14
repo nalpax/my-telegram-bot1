@@ -8,6 +8,13 @@ import pytest
 from gift_radar.models import FEE_NAMES, Fee, Gift, Route, Sale, Settings
 
 
+@pytest.fixture(autouse=True)
+def synthetic_admins(monkeypatch):
+    # Explicit test identities only. Production has no automatic administrator.
+    monkeypatch.setenv("ADMIN_IDS", "1,2")
+    monkeypatch.delenv("GIFT_RADAR_ADMIN_IDS", raising=False)
+
+
 @pytest.fixture
 def now():
     return datetime(2026, 10, 14, 12, tzinfo=timezone.utc)

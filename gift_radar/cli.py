@@ -12,11 +12,20 @@ from .models import CURRENCIES, instant, money, utcnow
 from .service import Radar
 from .storage import Store
 from .config import initialize_environment, bot_token, database_path
+from .security import SecretLogFilter, private_file
 
 
 def configure_logging(directory):
-    Path(directory).mkdir(parents=True, exist_ok=True)
+    if os.name == "posix":
+        os.umask(0o077)
+    Path(directory).mkdir(parents=True, exist_ok=True, mode=0o700)
+    private_file(Path(directory) / "radar.log")
+    for suffix in (".1", ".2", ".3"):
+        rotated = Path(directory) / ("radar.log" + suffix)
+        if rotated.exists():
+            private_file(rotated)
     handler = RotatingFileHandler(Path(directory) / "radar.log", maxBytes=1024 * 1024, backupCount=3, encoding="utf-8")
+    handler.addFilter(SecretLogFilter())
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     log = logging.getLogger("gift_radar")
     log.setLevel(logging.INFO)
@@ -30,7 +39,13 @@ def configure_logging(directory):
 
 
 def main(argv=None):
-    initialize_environment()
+    if os.name == "posix":
+        os.umask(0o077)
+    try:
+        initialize_environment()
+    except Exception as exc:
+        print(f"Настройки не загружены: {type(exc).__name__}. Проверьте доступ к .env и приватные права файла. Значения секретов не выводятся.")
+        return 1
     parser = argparse.ArgumentParser(description="Gift Radar: аналитика без торговых операций")
     parser.add_argument("--db", default=database_path())
     sub = parser.add_subparsers(dest="command", required=True)

@@ -4,6 +4,7 @@ import logging
 from .analytics import eligible, estimate
 from .models import utcnow
 from .storage import listing_key
+from .security import is_admin
 
 log = logging.getLogger(__name__)
 
@@ -32,6 +33,8 @@ class Radar:
                 log.warning("sync_error market=%s category=%s", adapter.market, category)
 
     def analyses(self, user, *, now=None, key=None):
+        if not is_admin(user):
+            raise PermissionError("Administrator access required")
         now = now or utcnow()
         settings = self.store.settings(user)
         listings = self.store.listings()
@@ -57,6 +60,8 @@ class Radar:
             await self.synchronize()
             now = utcnow()
             for user in self.store.users():
+                if not is_admin(user):
+                    continue
                 settings = self.store.settings(user)
                 if not settings.alerts or not self.store.due(user, now, settings.interval_minutes):
                     continue
@@ -68,6 +73,9 @@ class Radar:
                     key = listing_key(value.listing)
                     if not self.store.claim_alert(user, key, now):
                         continue
+                    if not is_admin(user):
+                        self.store.finish_alert(user, key, "access_revoked")
+                        break
                     try:
                         await sender(user, value)
                     except Exception as exc:

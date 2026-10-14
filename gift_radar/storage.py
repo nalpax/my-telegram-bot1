@@ -1,6 +1,7 @@
 import hashlib
 import json
 import sqlite3
+from dataclasses import replace
 from datetime import timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -9,6 +10,8 @@ from .analytics import Rate
 from .connections import Connection
 from .migrations import MIGRATIONS
 from .models import MARKETS, Gift, Route, Settings, dumps, gift_from, instant, route_from, sale_from, utcnow
+from .security import private_file
+from .adapters import redact_raw
 
 
 def listing_key(gift: Gift) -> str:
@@ -18,7 +21,12 @@ def listing_key(gift: Gift) -> str:
 class Store:
     def __init__(self, path: str):
         if path != ":memory:":
-            Path(path).parent.mkdir(parents=True, exist_ok=True)
+            Path(path).parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            private_file(path)
+            for suffix in ("-wal", "-shm", "-journal"):
+                companion = Path(str(path) + suffix)
+                if companion.exists():
+                    private_file(companion)
         self.db = sqlite3.connect(path, timeout=15)
         self.db.execute("PRAGMA foreign_keys=ON")
         self.db.execute("PRAGMA journal_mode=WAL")
@@ -55,6 +63,7 @@ class Store:
     def ingest(self, listings, sales):
         with self.db:
             for gift in listings:
+                gift = replace(gift, raw=redact_raw(gift.raw))
                 key = listing_key(gift)
                 old = self.db.execute("SELECT payload FROM listings WHERE key=?", (key,)).fetchone()
                 previous = gift_from(json.loads(old[0])) if old else None
@@ -65,6 +74,7 @@ class Store:
                 if not previous or previous.price != gift.price or previous.currency != gift.currency:
                     self.db.execute("INSERT OR IGNORE INTO price_history VALUES (?,?,?,?)", (key, str(gift.price), gift.currency, gift.updated_at.isoformat()))
             for sale in sales:
+                sale = replace(sale, gift=replace(sale.gift, raw=redact_raw(sale.gift.raw)))
                 self.db.execute("INSERT INTO sales VALUES (?,?,?,?) ON CONFLICT(market,sale_id) DO UPDATE SET payload=excluded.payload,sold_at=excluded.sold_at",
                                 (sale.gift.market, sale.sale_id, dumps(sale), sale.sold_at.isoformat()))
                 key = listing_key(sale.gift)
@@ -72,7 +82,6 @@ class Store:
                 if row:
                     old = gift_from(json.loads(row[0]))
                     if old.updated_at <= sale.sold_at:
-                        from dataclasses import replace
                         sold = replace(old, status="sold", updated_at=sale.sold_at)
                         self.db.execute("UPDATE listings SET payload=?,updated_at=? WHERE key=?", (dumps(sold), sold.updated_at.isoformat(), key))
             self.db.execute("INSERT OR REPLACE INTO metadata VALUES ('last_sync',?)", (utcnow().isoformat(),))

@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from urllib.parse import urlsplit
 
 from .models import MARKETS, safe_url
+from .security import is_admin
 
 
 MARKET_LINKS = {
@@ -18,9 +19,7 @@ ACCESS_REQUEST = ("Здравствуйте! Нужен разрешённый r
 
 
 def is_operator(user_id: int) -> bool:
-    names = os.environ.get("GIFT_RADAR_ADMIN_IDS") or os.environ.get("ADMIN_IDS", "")
-    ids = {int(x.strip()) for x in names.split(",") if x.strip().isdigit()}
-    return user_id in ids
+    return is_admin(user_id)
 
 
 def key_name(market, value):

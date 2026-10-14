@@ -58,7 +58,9 @@ def registry(store=None) -> list[MarketAdapter]:
 
 def redact_raw(value):
     if isinstance(value, dict):
-        return {k: redact_raw(v) for k, v in value.items() if not any(term in k.lower() for term in ("token", "auth", "cookie", "secret", "session", "password", "wallet", "buyer", "seller", "user"))}
+        return {k: redact_raw(v) for k, v in value.items() if k.lower() != "key" and not any(term in k.lower().replace("_", "").replace("-", "")
+                for term in ("token", "auth", "cookie", "secret", "session", "password", "wallet", "buyer", "seller", "user",
+                             "apikey", "apihash", "credential", "privatekey", "initdata", "webappdata"))}
     if isinstance(value, list):
         return [redact_raw(x) for x in value]
     return value

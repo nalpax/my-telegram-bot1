@@ -189,6 +189,8 @@ class MarketInterface:
                 path = Path(temp) / "export.json"
                 remote = await asyncio.wait_for(context.bot.get_file(document.file_id), timeout=20)
                 await asyncio.wait_for(remote.download_to_drive(path), timeout=30)
+                if not is_operator(update.effective_user.id):
+                    raise PermissionError("Administrator access revoked")
                 listings, sales = read_authorized_export(str(path), True, expected_market=market)
                 self.store.ingest(listings, sales)
         except Exception as exc:

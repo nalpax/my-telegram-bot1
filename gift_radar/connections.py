@@ -9,7 +9,8 @@ from .models import MARKETS, safe_url
 
 MARKET_LINKS = {
     "portals": {"open": "https://t.me/portals", "support": "https://t.me/portals_help_bot"},
-    "tonnel": {"open": "https://market.tonnel.network/"},
+    "tonnel": {"open": "https://market.tonnel.network/", "access": "https://t.me/thermos",
+               "docs": "https://docs.swap.coffee/technical-guides/thermos/backend-api"},
     "mrkt": {"open": "https://t.me/mrkt"},
 }
 ACCESS_REQUEST = ("Здравствуйте! Нужен разрешённый read-only API для аналитики подарков: активные лоты и завершённые продажи. "

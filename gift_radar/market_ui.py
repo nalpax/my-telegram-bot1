@@ -59,8 +59,12 @@ class MarketInterface:
             items.append(("🔑 Настроить доступ", f"market_key:{market}"))
         markup = self.keyboard(items, back="markets", home=True)
         rows = [[Button("🌐 Открыть площадку", url=MARKET_LINKS[market]["open"])]]
+        if market == "tonnel":
+            rows.insert(0, [Button("🔑 Получить ключ в Thermos", url=MARKET_LINKS[market]["access"])])
         if c.docs_url:
             rows.append([Button("📚 Открыть документацию", url=c.docs_url)])
+        elif market == "tonnel":
+            rows.append([Button("📚 Документация Thermos API", url=MARKET_LINKS[market]["docs"])])
         await self.ui.reply(update, "\n".join(lines), Keyboard(rows + list(markup.inline_keyboard)))
 
     async def callback(self, cmd, market, update, context):
@@ -76,15 +80,29 @@ class MarketInterface:
             await self.page(market, update)
         elif cmd == "market_how":
             variable = f"{market.upper()}_API_KEY"
-            body = (f"📖 Как получить доступ · {market.title()}\n━━━━━━━━━━━━━━\n"
-                    "1️⃣ Открой площадку или её поддержку. Попроси официальную документацию и разрешённый доступ только для чтения объявлений и завершённых продаж.\n\n"
-                    "2️⃣ Уточни способ авторизации, лимиты и правила использования. Публичная выдача API-ключей пока не подтверждена; кнопки «создать ключ» могут не быть.\n\n"
-                    f"3️⃣ Если тебе выдали ключ, сохрани его в секретах/переменных хостинга, например под именем {variable}, и перезапусти бота. Это имя настройки нашего бота, а не требование площадки.\n\n"
-                    "4️⃣ Здесь нажми «Привязать API-ключ» и укажи только ИМЯ переменной. Затем добавь ссылку на официальную документацию. Сам ключ в Telegram не присылай.\n\n"
-                    "⚠️ Сохранение ключа и ссылки не включает сбор автоматически: сначала нужно подключить получение данных по официальной документации.")
-            link = MARKET_LINKS[market].get("support", MARKET_LINKS[market]["open"])
-            rows = [[Button("💬 Поддержка Portals" if market == "portals" else "🌐 Открыть площадку", url=link)],
-                    [Button("📋 Скопировать запрос доступа", copy_text=CopyTextButton(text=ACCESS_REQUEST))]]
+            if market == "tonnel":
+                body = ("🔑 Получение ключа через Thermos\n━━━━━━━━━━━━━━\n"
+                        "Thermos — агрегатор подарков команды swap.coffee. В официальном канале объявлен публичный API для всех.\n\n"
+                        "1️⃣ Открой @thermos кнопкой ниже.\n"
+                        "2️⃣ Отправь ему команду /api и получи свой ключ — обращаться в поддержку не требуется.\n"
+                        f"3️⃣ Сохрани ключ в секретах хостинга под именем {variable}, затем перезапусти нашего бота.\n"
+                        "4️⃣ Нажми «Привязать API-ключ» и введи только имя переменной.\n\n"
+                        "⚠️ По предупреждению Thermos ключ даёт полный доступ к аккаунту, включая переводы подарков и вывод TON. Не присылай сам ключ в Telegram-сообщениях и не добавляй его в Git.\n\n"
+                        "Это ключ сервиса Thermos. Получение данных Tonnel через него нужно проверить по документации Thermos; автоматический сбор в нашем боте пока не реализован.")
+                rows = [[Button("🔑 Открыть Thermos → /api", url=MARKET_LINKS[market]["access"])],
+                        [Button("📚 Документация Thermos API", url=MARKET_LINKS[market]["docs"])],
+                        [Button("📣 Официальное объявление", url="https://t.me/thermos_news")]]
+            else:
+                body = (f"📖 Как получить доступ · {market.title()}\n━━━━━━━━━━━━━━\n"
+                        "1️⃣ Открой площадку и войди обычным способом. Если она предоставляет самостоятельную выдачу API-ключей, используй её раздел API/разработчика.\n\n"
+                        "2️⃣ Проверь документацию: отдельный API-ключ, токен входа Mini App и подписанные данные Telegram — разные способы авторизации. Нужен тот способ, который поддерживает выбранный API.\n\n"
+                        f"3️⃣ Полученный доступ сохрани в секретах/переменных хостинга, например под именем {variable}, и перезапусти бота. Это имя настройки нашего бота, а не требование площадки.\n\n"
+                        "4️⃣ Здесь нажми «Привязать API-ключ» и укажи только ИМЯ переменной. Затем добавь ссылку на документацию. Сам ключ или токен в Telegram не присылай.\n\n"
+                        "Точный самостоятельный способ для этой площадки пока не подтверждён. Поддержка — дополнительный вариант, если нужна помощь; обязательного обращения нет. Сохранение доступа не включает сбор без реализованного формата API.")
+                rows = [[Button("🌐 Открыть площадку", url=MARKET_LINKS[market]["open"])]]
+                if "support" in MARKET_LINKS[market]:
+                    rows.append([Button("💬 Помощь Portals (по желанию)", url=MARKET_LINKS[market]["support"])])
+                rows.append([Button("📋 Запросить уточнение (по желанию)", copy_text=CopyTextButton(text=ACCESS_REQUEST))])
             nav = self.keyboard([("🔑 Привязать API-ключ", f"market_key:{market}"), ("📚 Добавить документацию", f"market_docs:{market}")], back=f"market:{market}", home=True)
             await self.ui.reply(update, body, Keyboard(rows + list(nav.inline_keyboard)))
         elif cmd == "market_key":

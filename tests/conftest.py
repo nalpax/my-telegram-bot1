@@ -15,6 +15,24 @@ def synthetic_admins(monkeypatch):
     monkeypatch.delenv("GIFT_RADAR_ADMIN_IDS", raising=False)
 
 
+@pytest.fixture(autouse=True)
+def no_live_marketplace_requests(monkeypatch):
+    """Default verification transport is synthetic; explicit mocks remain usable."""
+    import httpx
+    from gift_radar import key_checks
+    requests = []
+    def response(request):
+        requests.append(request)
+        return httpx.Response(401, json={"detail": "synthetic rejected credential"})
+    client = key_checks.AsyncClient
+    def mock_client(**kwargs):
+        if kwargs.get("transport") is None:
+            kwargs["transport"] = httpx.MockTransport(response)
+        return client(**kwargs)
+    monkeypatch.setattr(key_checks, "AsyncClient", mock_client)
+    return requests
+
+
 @pytest.fixture
 def now():
     return datetime(2026, 10, 14, 12, tzinfo=timezone.utc)

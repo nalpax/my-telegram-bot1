@@ -77,7 +77,7 @@ def test_binding_never_implies_live_api_readiness(monkeypatch):
     asyncio.run(run())
 
 
-def test_key_setup_owner_guard_and_presence(monkeypatch):
+def test_old_environment_button_opens_direct_key_entry(monkeypatch):
     monkeypatch.setenv("ADMIN_IDS", "1")
     monkeypatch.delenv("GIFT_RADAR_ADMIN_IDS", raising=False)
     monkeypatch.setenv("PORTALS_TEST_KEY", "TEST_ONLY_NEVER_IN_MESSAGES")
@@ -89,12 +89,13 @@ def test_key_setup_owner_guard_and_presence(monkeypatch):
             await app.process_update(callback(app, "market_env:portals", user=2))
             assert "awaiting" not in app.user_data[2]
             await app.process_update(callback(app, "market_env:portals", user=1))
-            await app.process_update(text_input(app, "PORTALS_TEST_KEY", user=1))
-            assert store.connection("portals").key_env == "PORTALS_TEST_KEY"
+            await app.process_update(text_input(app, "TEST_ONLY_NEVER_IN_MESSAGES", user=1))
+            assert store.connection("portals").key_env is None
+            assert store.connection("portals").has_saved_key
             await app.process_update(callback(app, "market_check:portals", user=1))
         texts = [p["text"] for name,p in request.calls if name == "sendMessage"]
-        assert any("Ключ на сервере: задан" in t for t in texts)
-        assert any("Запрос к API не выполнялся" in t for t in texts)
+        assert any("Отправь сам API-ключ" in t for t in texts)
+        assert any("Проверка авторизации этой площадки пока недоступна" in t for t in texts)
         assert not any("TEST_ONLY_NEVER_IN_MESSAGES" in t for t in texts)
         assert "needs_adapter" == store.connection("portals").diagnosis()[0]
     asyncio.run(run())
@@ -108,9 +109,10 @@ def test_accidental_secret_is_rejected_and_deleted(monkeypatch):
         request = FakeTelegram()
         app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry(store)), request=request, polling_request=FakeTelegram())
         async with app:
-            await app.process_update(callback(app, "market_env:mrkt"))
-            await app.process_update(text_input(app, "TEST-secret-value-not-a-name"))
+            await app.process_update(callback(app, "market_key:mrkt"))
+            await app.process_update(text_input(app, "MRKT_API_KEY"))
             assert store.connection("mrkt").key_env is None
+            assert not store.connection("mrkt").has_saved_key
             assert any(name == "deleteMessage" for name,p in request.calls)
             await app.process_update(callback(app, "market:mrkt"))
             await app.process_update(text_input(app, "MRKT_TEST_KEY"))

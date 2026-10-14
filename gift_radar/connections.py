@@ -57,11 +57,11 @@ class Connection:
 
     def diagnosis(self):
         if self.has_saved_key:
-            return "needs_adapter", "Ключ сохранён в зашифрованном виде. Запросы к API пока не поддерживаются; проверка самого API не выполнена."
+            return "needs_adapter", "Ключ сохранён в зашифрованном виде. Автоматический сбор данных пока не реализован."
         if self.key_env and not self.credential_present:
             return "needs_credentials", "Переменная ключа сохранена, но не задана на сервере."
         if self.credential_present:
-            return "needs_adapter", "Ключ задан на сервере. Запросы к официальному API пока не поддерживаются; проверка самого API не выполнена."
+            return "needs_adapter", "Ключ задан на сервере. Автоматический сбор данных пока не реализован."
         if self.docs_url:
             return "needs_adapter", "Ссылка на документацию сохранена. Для получения данных нужно реализовать описанный в ней формат API."
         return "disabled", "Официальный разрешённый API не подтверждён. Получите доступ или загрузите разрешённый экспорт."

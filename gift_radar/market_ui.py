@@ -7,10 +7,11 @@ from tempfile import TemporaryDirectory
 from telegram import CopyTextButton, InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard
 
 from .adapters import read_authorized_export
-from .connections import ACCESS_REQUEST, MARKET_LINKS, documentation_url, is_operator, key_name
+from .connections import ACCESS_REQUEST, MARKET_LINKS, documentation_url, is_operator
 from .models import MARKETS
 from .credentials import credential_value
 from .security import private_admin, register_secret
+from .key_checks import KeyCheck, MarketKeyChecker
 
 
 class MarketInterface:
@@ -19,6 +20,7 @@ class MarketInterface:
         self.ui = interface
         self.store = interface.store
         self.keyboard = keyboard
+        self.key_checker = MarketKeyChecker()
 
     def nav(self, market):
         return self.keyboard([], back=f"market:{market}", home=True)
@@ -51,7 +53,7 @@ class MarketInterface:
                  f"\n{detail}"]
         if owner and c.key_env:
             lines.append(f"\nИмя переменной на хостинге: {c.key_env}")
-        items = [("📖 Как получить доступ", f"market_how:{market}"), ("🧪 Проверить настройки", f"market_check:{market}")]
+        items = [("📖 Как получить доступ", f"market_how:{market}"), ("🧪 Проверить ключ", f"market_check:{market}")]
         if owner:
             items += [("🔑 Добавить / заменить ключ", f"market_key:{market}"), ("📚 Добавить документацию", f"market_docs:{market}"),
                       ("📎 Загрузить экспорт", f"market_import:{market}")]
@@ -89,7 +91,7 @@ class MarketInterface:
                         "1️⃣ Открой @thermos кнопкой ниже.\n"
                         "2️⃣ Отправь ему команду /api и получи свой ключ — обращаться в поддержку не требуется.\n"
                         "3️⃣ Вернись сюда, нажми «Добавить API-ключ» и отправь сам ключ в этом личном чате администратора.\n"
-                        "4️⃣ Бот удалит сообщение и сохранит ключ в зашифрованном виде. Имя TONNEL_API_KEY вводить не нужно.\n\n"
+                        "4️⃣ Бот удалит сообщение, сохранит ключ зашифрованным и сразу проверит авторизацию Thermos. Дополнительные переменные на хостинге не нужны.\n\n"
                         "⚠️ По предупреждению Thermos ключ даёт полный доступ к аккаунту, включая переводы подарков и вывод TON. Не публикуй его, не отправляй другим ботам и не добавляй в Git.\n\n"
                         "Это ключ сервиса Thermos. Получение данных Tonnel через него нужно проверить по документации Thermos; автоматический сбор в нашем боте пока не реализован.")
                 rows = [[Button("🔑 Открыть Thermos → /api", url=MARKET_LINKS[market]["access"])],
@@ -110,28 +112,20 @@ class MarketInterface:
             await self.ui.reply(update, body, Keyboard(rows + list(nav.inline_keyboard)))
         elif cmd == "market_key":
             context.user_data["awaiting"] = ("market_key", market)
-            markup = self.keyboard([("⚙️ Использовать секрет хостинга", f"market_env:{market}")], back=f"market:{market}", home=True)
+            markup = self.nav(market)
             await self.ui.reply(update, f"🔑 Добавление ключа · {market.title()}\n━━━━━━━━━━━━━━\n"
                                 "Отправь сам API-ключ одним текстовым сообщением в этом личном чате. Имя переменной вводить не нужно.\n\n"
-                                "🔒 Доступ только для администратора. Бот удалит сообщение перед сохранением и зашифрует ключ; в ответах его значение не отображается.\n\n"
+                                "🔒 Доступ только для администратора. Бот удалит сообщение перед сохранением, зашифрует ключ и автоматически запустит проверку. Значение ключа в ответах не отображается; переменные на хостинге добавлять не нужно.\n\n"
                                 "↩️ «Назад» отменит ввод.", markup)
         elif cmd == "market_env":
-            context.user_data["awaiting"] = ("market_env", market)
-            await self.ui.reply(update, f"⚙️ Секрет хостинга · {market.title()}\n━━━━━━━━━━━━━━\n"
-                                f"Этот вариант — для уже заданного секрета на хостинге. Пришли только имя переменной, например {market.upper()}_API_KEY.\n\n"
-                                "Чтобы отправить сам ключ, вернись к кнопке «Добавить / заменить ключ».", self.nav(market))
+            # Old messages must lead into the new flow, not recreate env bindings.
+            return await self.callback("market_key", market, update, context)
         elif cmd == "market_docs":
             context.user_data["awaiting"] = ("market_docs", market)
             await self.ui.reply(update, "📚 Пришли публичную HTTPS-ссылку на официальную документацию API этой площадки, без ключей и параметров авторизации.\n\n"
                                 "Ссылка будет сохранена для проверки контракта. Это не API endpoint; бот не отправляет на неё ключ.", self.nav(market))
         elif cmd == "market_check":
-            c = self.store.connection(market)
-            state, detail = c.diagnosis()
-            self.store.set_market(market, state, detail)
-            await self.ui.reply(update, f"🧪 Проверка настроек · {market.title()}\n━━━━━━━━━━━━━━\n"
-                                f"Ключ на сервере: {'задан' if c.credential_present else 'не задан'}\n"
-                                f"Документация: {'ссылка сохранена' if c.docs_url else 'не добавлена'}\n\n{detail}\n\n"
-                                "Проверено наличие настроек. Запрос к API не выполнялся: официальный формат пока не реализован.", self.nav(market))
+            await self.check_key(market, update)
         elif cmd == "market_import":
             context.user_data["awaiting"] = ("market_export", market)
             nav = self.nav(market)
@@ -150,11 +144,28 @@ class MarketInterface:
             await self.ui.reply(update, ACCESS_REQUEST, self.nav(market))
         return True
 
+    async def check_key(self, market, update):
+        if not private_admin(update):
+            return
+        try:
+            key = self.store.credential(market)
+        except ValueError:
+            result = KeyCheck("storage_error", "⚠️ Не удалось прочитать сохранённый ключ. Восстанови файл шифрования из резервной копии.")
+        else:
+            if market == "tonnel" and key:
+                await self.ui.reply(update, "🔎 Проверяю ключ через официальный API Thermos…", self.nav(market))
+            if not private_admin(update):
+                return
+            result = await self.key_checker.check(market, key)
+        if not private_admin(update):
+            return
+        await self.ui.reply(update, f"🧪 Проверка ключа · {market.title()}\n━━━━━━━━━━━━━━\n{result.message}", self.nav(market))
+
     async def input(self, update, context):
         if not private_admin(update):
             return True
         pending = context.user_data.get("awaiting")
-        if not pending or pending[0] not in ("market_key", "market_env", "market_docs", "market_export"):
+        if not pending or pending[0] not in ("market_key", "market_docs", "market_export"):
             return False
         kind, market = pending
         if await self.owner_required(update):
@@ -190,14 +201,12 @@ class MarketInterface:
                 await self.ui.reply(update, "⚠️ Ключ не сохранён. Проверь доступ к файлу шифрования на хостинге; если он потерян, восстанови его из резервной копии. Сообщение удалено. Повтори ввод или нажми «Назад».", self.nav(market))
                 return True
             context.user_data.pop("awaiting", None)
-            await self.ui.reply(update, "✅ Ключ сохранён в зашифрованном виде. Сообщение с ключом удалено.\n\nСохранение ключа не проверяет доступ к API; автоматический сбор пока не реализован.", self.nav(market))
+            await self.ui.reply(update, "🔒 Ключ сохранён в зашифрованном виде. Сообщение с ключом удалено.", self.nav(market))
+            await self.check_key(market, update)
             return True
         try:
             c = self.store.connection(market)
-            if kind == "market_env":
-                c = replace(c, key_env=key_name(market, raw))
-            else:
-                c = replace(c, docs_url=documentation_url(raw))
+            c = replace(c, docs_url=documentation_url(raw))
             self.store.save_connection(c)
         except ValueError:
             # An accidentally pasted credential should not remain in the conversation.
@@ -205,10 +214,10 @@ class MarketInterface:
                 await update.effective_message.delete()
             except Exception:
                 pass
-            await self.ui.reply(update, "⚠️ Нужны имя переменной выбранной площадки или публичная ссылка на документацию. Секретные значения не сохраняются. Повтори ввод или нажми «Назад».", self.nav(market))
+            await self.ui.reply(update, "⚠️ Нужна публичная HTTPS-ссылка на документацию, без секретов и параметров авторизации. Повтори ввод или нажми «Назад».", self.nav(market))
             return True
         context.user_data.pop("awaiting", None)
-        await self.ui.reply(update, "✅ Настройка сохранена. Проверка наличия ключа доступна в карточке площадки.", self.nav(market))
+        await self.ui.reply(update, "✅ Настройка сохранена. Проверка ключа доступна в карточке площадки.", self.nav(market))
         return True
 
     async def document(self, update, context):

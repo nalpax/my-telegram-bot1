@@ -25,6 +25,8 @@ class MarketAdapter(Protocol):
 
 class DisabledAdapter:
     market = ""
+    def __init__(self, store=None):
+        self.store = store
     async def get_active_listings(self):
         return []
     async def get_completed_sales(self):
@@ -32,6 +34,9 @@ class DisabledAdapter:
     async def get_listing_details(self, listing_id):
         return None
     async def health_check(self):
+        if self.store:
+            state, detail = self.store.connection(self.market).diagnosis()
+            return Health(state, detail)
         return Health("disabled", "Официальный разрешённый API не подтверждён; автоматический сбор отключён")
 
 
@@ -47,8 +52,8 @@ class MRKTAdapter(DisabledAdapter):
     market = "mrkt"
 
 
-def registry() -> list[MarketAdapter]:
-    return [PortalsAdapter(), TonnelAdapter(), MRKTAdapter()]
+def registry(store=None) -> list[MarketAdapter]:
+    return [PortalsAdapter(store), TonnelAdapter(store), MRKTAdapter(store)]
 
 
 def redact_raw(value):
@@ -59,7 +64,7 @@ def redact_raw(value):
     return value
 
 
-def read_authorized_export(path: str, authorized: bool):
+def read_authorized_export(path: str, authorized: bool, expected_market=None):
     """Internal interchange format; NOT a guessed marketplace response schema."""
     if not authorized:
         raise ValueError("Нужно подтвердить право использования экспорта: --authorized")
@@ -80,11 +85,15 @@ def read_authorized_export(path: str, authorized: bool):
         return gift_from({**row, "source": data["source"], "raw": redact_raw(row.get("raw", {}))})
     for row in data.get("listings", []):
         gift = normalize(row)
+        if expected_market and gift.market != expected_market:
+            raise ValueError("Экспорт содержит другую площадку")
         if gift.updated_at > now or (gift.listed_at and gift.listed_at > gift.updated_at):
             raise ValueError("Время лота находится в будущем или противоречиво")
         listings.append(gift)
     for row in data.get("sales", []):
         gift = normalize(row["gift"])
+        if expected_market and gift.market != expected_market:
+            raise ValueError("Экспорт содержит другую площадку")
         sale = Sale(row["sale_id"], gift, instant(row["sold_at"]), row["evidence"])
         if sale.sold_at > now:
             raise ValueError("Продажа находится в будущем")

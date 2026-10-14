@@ -53,7 +53,7 @@ def input_navigation(context):
     if not pending:
         return keyboard([], home=True)
     kind, field = pending
-    parent = settings_parent(field) if kind == "setting" else "feesview" if kind == "fee" else "rate_quote_menu"
+    parent = f"market:{field}" if kind.startswith("market_") else settings_parent(field) if kind == "setting" else "feesview" if kind == "fee" else "rate_quote_menu"
     return keyboard([], back=parent, home=True)
 
 
@@ -88,6 +88,8 @@ class Interface:
     def __init__(self, store, radar):
         self.store, self.radar = store, radar
         self.last_scan = {}
+        from .market_ui import MarketInterface
+        self.markets = MarketInterface(self)
 
     async def reply(self, update, message, markup=None):
         await update.effective_message.reply_text(message, reply_markup=markup, disable_web_page_preview=True)
@@ -126,9 +128,9 @@ class Interface:
             await self.reply(update, "⚙️ Настройки\n━━━━━━━━━━━━━━\n" + settings_text(settings),
                              keyboard([(label, f"edit:{key}") for key, label in FIELDS.items()], home=True))
         elif cmd == "markets":
-            indicators = {"ready": "🟢", "disabled": "⚪", "unavailable": "🔴"}
-            lines = [f"{indicators.get(state, '🟡')} {m.title()}: {state}\n{detail}" for m, state, detail, _ in self.store.market_status()]
-            await self.reply(update, "🏪 Площадки\n━━━━━━━━━━━━━━\n" + "\n\n".join(lines) + "\n\nИмпорт локального экспорта не означает подключение API.", keyboard([], home=True))
+            await self.markets.overview(update)
+        elif cmd == "id":
+            await self.reply(update, f"🆔 Твой Telegram ID: {user}\nДля управления подключениями владелец добавляет свой ID в ADMIN_IDS на хостинге.", keyboard([], home=True))
         elif cmd == "alerts":
             await self.reply(update, "🔔 Уведомления\n━━━━━━━━━━━━━━\n"
                              f"{'🟢 Включены' if settings.alerts else '🔴 Выключены'}\n\nДо 3 лотов за цикл, без повторов. Неполные расчёты не отправляются.",
@@ -199,6 +201,8 @@ class Interface:
         cmd, _, value = data.partition(":")
         # Leaving any input screen cancels its draft; later text must not save it.
         context.user_data.pop("awaiting", None)
+        if await self.markets.callback(cmd, value, update, context):
+            return
         if cmd in ("favorite", "unfavorite", "hide", "compare", "evidence"):
             gift = self.store.listing(value)
             if not gift:
@@ -374,6 +378,8 @@ class Interface:
         if "awaiting" not in context.user_data:
             await self.reply(update, "Выберите действие в меню.", MENU)
             return
+        if await self.markets.input(update, context):
+            return
         kind, field = context.user_data["awaiting"]
         navigation = input_navigation(context)
         raw = update.effective_message.text.strip()
@@ -408,6 +414,9 @@ class Interface:
         except (ValueError, ArithmeticError, KeyError):
             await self.reply(update, "⚠️ Некорректное значение. Проверьте диапазон и формат; повторите ввод или нажмите «Назад».", navigation)
 
+    async def document(self, update, context):
+        await self.markets.document(update, context)
+
 
 def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=None, polling_request=None):
     ui = Interface(store, radar)
@@ -432,7 +441,7 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
         await application.bot.set_my_commands([(name, label) for name, label in
             [("start", "Начало"), ("help", "Помощь"), ("settings", "Настройки"), ("markets", "Площадки"),
              ("scan", "Просмотр аналитики"), ("alerts", "Уведомления"), ("favorites", "Избранное"),
-             ("fees", "Расходы"), ("currency", "Валюты"), ("status", "Состояние"), ("cancel", "Отменить ввод")]])
+             ("fees", "Расходы"), ("currency", "Валюты"), ("status", "Состояние"), ("cancel", "Отменить ввод"), ("id", "Мой ID")]])
         worker = asyncio.create_task(work())
 
     async def stop(application):
@@ -454,9 +463,10 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
     polling_request = polling_request or HTTPXRequest(connect_timeout=10, read_timeout=40)
     app = (Application.builder().token(token).request(request).get_updates_request(polling_request)
            .post_init(startup).post_stop(stop).build())
-    for name in ("start", "help", "settings", "markets", "scan", "alerts", "favorites", "fees", "currency", "status", "cancel", "delete_me"):
+    for name in ("start", "help", "settings", "markets", "scan", "alerts", "favorites", "fees", "currency", "status", "cancel", "delete_me", "id"):
         app.add_handler(CommandHandler(name, ui.command))
     app.add_handler(CallbackQueryHandler(ui.callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ui.input))
+    app.add_handler(MessageHandler(filters.Document.ALL & filters.ChatType.PRIVATE, ui.document))
     app.add_error_handler(on_error)
     return app

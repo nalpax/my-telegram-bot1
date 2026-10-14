@@ -77,7 +77,7 @@ def main(argv=None):
                 raise ValueError("Scan interval >=30 seconds; retention >=30 days")
             configure_logging(os.environ.get("GIFT_RADAR_LOG_DIR", "logs"))
             from .telegram_ui import build_app
-            app = build_app(token, store, Radar(store, registry()), seconds, days)
+            app = build_app(token, store, Radar(store, registry(store)), seconds, days)
             if args.command == "telegram-check":
                 async def check():
                     async with app:

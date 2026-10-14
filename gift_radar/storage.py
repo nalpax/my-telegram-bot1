@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from .analytics import Rate
+from .connections import Connection
 from .migrations import MIGRATIONS
 from .models import MARKETS, Gift, Route, Settings, dumps, gift_from, instant, route_from, sale_from, utcnow
 
@@ -145,6 +146,19 @@ class Store:
 
     def market_status(self):
         return list(self.db.execute("SELECT market,state,detail,checked_at FROM markets"))
+
+    def connection(self, market):
+        row = self.db.execute("SELECT key_env,docs_url FROM market_connections WHERE market=?", (market,)).fetchone()
+        return Connection(market, *row) if row else Connection(market)
+
+    def save_connection(self, connection):
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO market_connections VALUES (?,?,?,?)",
+                            (connection.market, connection.key_env, connection.docs_url, utcnow().isoformat()))
+
+    def disconnect(self, market):
+        with self.db:
+            self.db.execute("DELETE FROM market_connections WHERE market=?", (market,))
 
     def set_market(self, market, state, detail):
         with self.db:

@@ -34,4 +34,8 @@ MIGRATIONS = [
     INSERT INTO rates SELECT 0, base, quote, value, at, source FROM rates_legacy;
     DROP TABLE rates_legacy;
     """,
+    """
+    CREATE TABLE market_connections (market TEXT PRIMARY KEY, key_env TEXT, docs_url TEXT,
+                                     updated_at TEXT NOT NULL);
+    """,
 ]

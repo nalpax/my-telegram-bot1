@@ -61,7 +61,7 @@ def test_new_migration_preserves_old_users(tmp_path):
     old.commit()
     old.close()
     store = Store(path)
-    assert store.db.execute("PRAGMA user_version").fetchone()[0] == 3
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == 4
     assert store.db.execute("SELECT value FROM metadata WHERE name='test_old'").fetchone()[0] == "keep"
 
 
@@ -86,9 +86,9 @@ def test_key_setup_owner_guard_and_presence(monkeypatch):
         request = FakeTelegram()
         app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry(store)), request=request, polling_request=FakeTelegram())
         async with app:
-            await app.process_update(callback(app, "market_key:portals", user=2))
+            await app.process_update(callback(app, "market_env:portals", user=2))
             assert "awaiting" not in app.user_data[2]
-            await app.process_update(callback(app, "market_key:portals", user=1))
+            await app.process_update(callback(app, "market_env:portals", user=1))
             await app.process_update(text_input(app, "PORTALS_TEST_KEY", user=1))
             assert store.connection("portals").key_env == "PORTALS_TEST_KEY"
             await app.process_update(callback(app, "market_check:portals", user=1))
@@ -108,7 +108,7 @@ def test_accidental_secret_is_rejected_and_deleted(monkeypatch):
         request = FakeTelegram()
         app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry(store)), request=request, polling_request=FakeTelegram())
         async with app:
-            await app.process_update(callback(app, "market_key:mrkt"))
+            await app.process_update(callback(app, "market_env:mrkt"))
             await app.process_update(text_input(app, "TEST-secret-value-not-a-name"))
             assert store.connection("mrkt").key_env is None
             assert any(name == "deleteMessage" for name,p in request.calls)

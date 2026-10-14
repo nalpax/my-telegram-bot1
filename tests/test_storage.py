@@ -15,7 +15,7 @@ def test_sqlite_migration_idempotent(tmp_path):
     path = str(tmp_path / "test.sqlite3")
     for _ in range(2):
         store = Store(path)
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 3
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 4
         store.close()
 
 

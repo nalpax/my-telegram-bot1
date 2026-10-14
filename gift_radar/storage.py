@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 import sqlite3
 from dataclasses import replace
 from datetime import timedelta
@@ -8,9 +9,10 @@ from pathlib import Path
 
 from .analytics import Rate
 from .connections import Connection
+from .credentials import CredentialVault, credential_value
 from .migrations import MIGRATIONS
 from .models import MARKETS, Gift, Route, Settings, dumps, gift_from, instant, route_from, sale_from, utcnow
-from .security import private_file
+from .security import private_file, register_secret
 from .adapters import redact_raw
 
 
@@ -35,6 +37,13 @@ class Store:
             raise RuntimeError("Database schema newer than application")
         for i in range(version, len(MIGRATIONS)):
             self.db.executescript(f"BEGIN IMMEDIATE;\n{MIGRATIONS[i]}\nPRAGMA user_version={i+1};\nCOMMIT;")
+        self.vault = CredentialVault(path)
+        try:
+            for market, ciphertext in self.db.execute("SELECT market,ciphertext FROM market_credentials"):
+                register_secret(self.vault.decrypt(market, ciphertext))
+        except ValueError:
+            self.db.close()
+            raise
         with self.db:
             for market in MARKETS:
                 self.db.execute("INSERT OR IGNORE INTO markets VALUES (?,?,?,?)",
@@ -158,16 +167,42 @@ class Store:
 
     def connection(self, market):
         row = self.db.execute("SELECT key_env,docs_url FROM market_connections WHERE market=?", (market,)).fetchone()
-        return Connection(market, *row) if row else Connection(market)
+        saved = self.db.execute("SELECT 1 FROM market_credentials WHERE market=?", (market,)).fetchone() is not None
+        return Connection(market, *(row or (None, None)), has_saved_key=saved)
+
+    def credential(self, market):
+        connection = self.connection(market)
+        row = self.db.execute("SELECT ciphertext FROM market_credentials WHERE market=?", (market,)).fetchone()
+        value = self.vault.decrypt(market, row[0]) if row else os.environ.get(connection.key_env) if connection.key_env else None
+        register_secret(value)
+        return value
+
+    def save_credential(self, market, value):
+        connection = self.connection(market)
+        value = credential_value(value)
+        # Also mask a submitted value if disk protection fails before it is saved.
+        register_secret(value)
+        exists = self.db.execute("SELECT 1 FROM market_credentials LIMIT 1").fetchone() is not None
+        for saved_market, saved_ciphertext in self.db.execute("SELECT market,ciphertext FROM market_credentials"):
+            self.vault.decrypt(saved_market, saved_ciphertext)
+        ciphertext = self.vault.encrypt(market, value, allow_create=not exists)
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO market_credentials VALUES (?,?,?)",
+                            (market, ciphertext, utcnow().isoformat()))
+            self.db.execute("INSERT OR REPLACE INTO market_connections VALUES (?,?,?,?)",
+                            (market, None, connection.docs_url, utcnow().isoformat()))
 
     def save_connection(self, connection):
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO market_connections VALUES (?,?,?,?)",
                             (connection.market, connection.key_env, connection.docs_url, utcnow().isoformat()))
+            if connection.key_env:
+                self.db.execute("DELETE FROM market_credentials WHERE market=?", (connection.market,))
 
     def disconnect(self, market):
         with self.db:
             self.db.execute("DELETE FROM market_connections WHERE market=?", (market,))
+            self.db.execute("DELETE FROM market_credentials WHERE market=?", (market,))
 
     def set_market(self, market, state, detail):
         with self.db:

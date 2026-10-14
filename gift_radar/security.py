@@ -5,6 +5,15 @@ import re
 from pathlib import Path
 
 
+_saved_secrets = set()
+
+
+def register_secret(value):
+    """Keep known credentials out of settings and logs, including after restart."""
+    if value and len(value) >= 8:
+        _saved_secrets.add(value)
+
+
 def admin_ids() -> frozenset[int]:
     raw = os.environ.get("GIFT_RADAR_ADMIN_IDS") or os.environ.get("ADMIN_IDS", "")
     if not raw.strip():
@@ -25,7 +34,9 @@ def private_admin(update) -> bool:
 
 
 def contains_secret(text, extra_names=()) -> bool:
-    names = {"BOT_TOKEN", "TELEGRAM_BOT_TOKEN", *filter(None, extra_names)}
+    if any(value in text for value in _saved_secrets):
+        return True
+    names = {"BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "GIFT_RADAR_ENCRYPTION_KEY", *filter(None, extra_names)}
     names.update(k for k in os.environ if k.startswith(("PORTALS_", "TONNEL_", "MRKT_")) and
                  any(word in k for word in ("KEY", "TOKEN", "SECRET", "PASSWORD", "AUTH", "SESSION", "HASH")))
     for name in names:
@@ -63,7 +74,9 @@ class SecretLogFilter(logging.Filter):
             message = record.getMessage()
         except Exception:
             message = "Malformed log record suppressed"
-        names = {"BOT_TOKEN", "TELEGRAM_BOT_TOKEN"}
+        for value in sorted(_saved_secrets, key=len, reverse=True):
+            message = message.replace(value, "[REDACTED]")
+        names = {"BOT_TOKEN", "TELEGRAM_BOT_TOKEN", "GIFT_RADAR_ENCRYPTION_KEY"}
         names.update(k for k in os.environ if k.startswith(("PORTALS_", "TONNEL_", "MRKT_")))
         for name in names:
             value = os.environ.get(name)

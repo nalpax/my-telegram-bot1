@@ -38,4 +38,8 @@ MIGRATIONS = [
     CREATE TABLE market_connections (market TEXT PRIMARY KEY, key_env TEXT, docs_url TEXT,
                                      updated_at TEXT NOT NULL);
     """,
+    """
+    CREATE TABLE market_credentials (market TEXT PRIMARY KEY, ciphertext TEXT NOT NULL,
+                                    updated_at TEXT NOT NULL);
+    """,
 ]

@@ -1,4 +1,4 @@
-"""Connection metadata only. Credentials remain in the host environment."""
+"""Public connection metadata; actual credentials live in the vault or environment."""
 import os
 import re
 from dataclasses import dataclass
@@ -40,6 +40,7 @@ class Connection:
     market: str
     key_env: str | None = None
     docs_url: str | None = None
+    has_saved_key: bool = False
 
     def __post_init__(self):
         if self.market not in MARKETS:
@@ -52,9 +53,11 @@ class Connection:
     @property
     def credential_present(self):
         # A proxy placeholder counts as present; presence never proves API authorization.
-        return bool(self.key_env and os.environ.get(self.key_env))
+        return self.has_saved_key or bool(self.key_env and os.environ.get(self.key_env))
 
     def diagnosis(self):
+        if self.has_saved_key:
+            return "needs_adapter", "Ключ сохранён в зашифрованном виде. Запросы к API пока не поддерживаются; проверка самого API не выполнена."
         if self.key_env and not self.credential_present:
             return "needs_credentials", "Переменная ключа сохранена, но не задана на сервере."
         if self.credential_present:

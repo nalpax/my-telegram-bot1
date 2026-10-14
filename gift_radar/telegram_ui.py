@@ -408,9 +408,13 @@ class Interface:
             await erase_input(update)
 
     async def process_input(self, update, context):
+        pending = context.user_data.get("awaiting")
+        if pending and pending[0] == "market_key":
+            await self.markets.input(update, context)
+            return
         names = [self.store.connection(market).key_env for market in MARKETS]
         if contains_secret(update.effective_message.text, names):
-            await self.reply(update, "🔒 Не присылай ключи или токены сообщением. Сохрани секрет на хостинге; здесь принимается только имя переменной.", input_navigation(context))
+            await self.reply(update, "🔒 Здесь секреты не принимаются. Для ключа выбери «Площадки» → нужную площадку → «Добавить / заменить ключ» в личном чате администратора.", input_navigation(context))
             return
         if "awaiting" not in context.user_data:
             await self.reply(update, "Выберите действие в меню.", MENU)

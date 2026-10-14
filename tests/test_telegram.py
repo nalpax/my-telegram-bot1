@@ -4,6 +4,7 @@ import json
 
 from telegram import Update
 from telegram.request import BaseRequest
+import pytest
 
 from gift_radar.adapters import registry
 from gift_radar.service import Radar
@@ -126,4 +127,75 @@ def test_old_shop_button_opens_new_menu():
             await app.process_update(callback(app, "catalog"))
         texts = [p["text"] for name,p in request.calls if name == "sendMessage"]
         assert any("прежнего меню" in t and "/start" in t for t in texts)
+    asyncio.run(run())
+
+
+def last_buttons(request):
+    params = next(p for name,p in reversed(request.calls) if name == "sendMessage")
+    markup = params["reply_markup"]
+    if isinstance(markup, str):
+        markup = json.loads(markup)
+    return [b for row in markup["inline_keyboard"] for b in row]
+
+
+@pytest.mark.parametrize("destination", ["settings", "menu"])
+def test_navigation_cancels_setting_input(destination):
+    async def run():
+        store = Store(":memory:")
+        request = FakeTelegram()
+        app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry()), request=request, polling_request=FakeTelegram())
+        async with app:
+            await app.process_update(callback(app, "edit:min_roi"))
+            assert {b["callback_data"] for b in last_buttons(request)} == {"settings", "menu"}
+            await app.process_update(callback(app, destination))
+            await app.process_update(text_input(app, "999"))
+        assert store.settings(1).min_roi == 10
+        assert "awaiting" not in app.user_data[1]
+    asyncio.run(run())
+
+
+def test_fee_and_rate_back_keep_previous_step_without_saving():
+    async def run():
+        store = Store(":memory:")
+        request = FakeTelegram()
+        app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry()), request=request, polling_request=FakeTelegram())
+        async with app:
+            for data in ("fees", "routebuy:portals", "routesell:tonnel", "routecurrency:TON", "fee:sell"):
+                await app.process_update(callback(app, data))
+            assert {b["callback_data"] for b in last_buttons(request)} == {"feesview", "menu"}
+            await app.process_update(callback(app, "feesview"))
+            await app.process_update(text_input(app, "50%"))
+            assert "sell" not in store.route(1, "portals", "tonnel", "TON").fees
+            await app.process_update(callback(app, "route_currency_menu"))
+            assert "route_sell_menu" in {b["callback_data"] for b in last_buttons(request)}
+            await app.process_update(callback(app, "route_sell_menu"))
+            assert "fees" in {b["callback_data"] for b in last_buttons(request)}
+            for data in ("ratebase", "ratequote:TON", "ratevalue:USD", "rate_quote_menu"):
+                await app.process_update(callback(app, data))
+            assert app.user_data[1]["rate_base"] == "TON"
+            assert "ratebase" in {b["callback_data"] for b in last_buttons(request)}
+            await app.process_update(text_input(app, "999"))
+            assert store.rate("TON", "USD", 1) is None
+            await app.process_update(callback(app, "menu"))
+            assert not app.user_data[1]
+            # An old message after returning home must offer a fresh route, not crash.
+            await app.process_update(callback(app, "feesview"))
+            assert {b["callback_data"] for b in last_buttons(request)} == {"fees", "menu"}
+        texts = [p["text"] for name,p in request.calls if name == "sendMessage"]
+        assert not any("Временная ошибка" in t for t in texts)
+    asyncio.run(run())
+
+
+def test_currency_controls_return_to_currency_section():
+    async def run():
+        store = Store(":memory:")
+        request = FakeTelegram()
+        app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry()), request=request, polling_request=FakeTelegram())
+        async with app:
+            await app.process_update(callback(app, "edit:display_currencies"))
+            buttons = last_buttons(request)
+            assert next(b["callback_data"] for b in buttons if "Готово" in b["text"]) == "currency"
+            assert next(b["callback_data"] for b in buttons if "Назад" in b["text"]) == "currency"
+            await app.process_update(callback(app, "edit:calculation_currency"))
+            assert "currency" in {b["callback_data"] for b in last_buttons(request)}
     asyncio.run(run())

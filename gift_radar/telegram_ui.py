@@ -14,11 +14,11 @@ from .presentation import FEE_LABELS, comparison, render_card, settings_text, te
 from .storage import listing_key
 
 log = logging.getLogger(__name__)
-FIELDS = {"min_profit": "Мин. прибыль", "min_roi": "Мин. ROI %", "max_price": "Макс. цена",
-          "min_sales": "Минимум аналогов", "min_liquidity": "Ликвидность", "history_days": "Период истории",
-          "collections": "Коллекции", "models": "Модели", "backdrops": "Фоны", "patterns": "Узоры",
-          "symbols": "Символы", "signature": "Подпись", "signature_discount": "Скидка подписи %",
-          "buy_markets": "Площадки покупки", "sell_markets": "Площадки перепродажи", "interval_minutes": "Интервал уведомлений"}
+FIELDS = {"min_profit": "💰 Мин. прибыль", "min_roi": "📈 Мин. ROI %", "max_price": "🏷 Макс. цена",
+          "min_sales": "🔎 Минимум аналогов", "min_liquidity": "💧 Ликвидность", "history_days": "🗓 Период истории",
+          "collections": "🎁 Коллекции", "models": "🧩 Модели", "backdrops": "🎨 Фоны", "patterns": "✨ Узоры",
+          "symbols": "🔣 Символы", "signature": "✍️ Подпись", "signature_discount": "✂️ Скидка подписи %",
+          "buy_markets": "🛍 Площадки покупки", "sell_markets": "📤 Площадки перепродажи", "interval_minutes": "⏱ Интервал уведомлений"}
 HELP = ("Бот анализирует данные и уведомляет, покупки и кошельки не поддерживаются.\n"
         "/settings — фильтры; /markets — доступность; /scan — просмотр аналитики; /alerts — уведомления; "
         "/favorites — избранное; /fees — расходы по маршруту; /currency — валюты и курсы; /status — состояние.\n"
@@ -26,24 +26,46 @@ HELP = ("Бот анализирует данные и уведомляет, п�
         "Площадки пока не подключены: требуется подтверждённый официальный доступ. Цены активных лотов не используются вместо завершённых продаж.")
 
 
-def keyboard(items, width=2):
+def keyboard(items, width=2, *, back=None, home=False):
     buttons = [Button(label, callback_data=data) for label, data in items]
-    return Keyboard([buttons[i:i+width] for i in range(0, len(buttons), width)])
+    rows = [buttons[i:i+width] for i in range(0, len(buttons), width)]
+    navigation = []
+    if back:
+        navigation.append(Button("⬅️ Назад", callback_data=back))
+    if home:
+        navigation.append(Button("🏠 Главное меню", callback_data="menu"))
+    if navigation:
+        rows.append(navigation)
+    return Keyboard(rows)
 
 
-MENU = keyboard([("Аналитика", "scan"), ("Настройки", "settings"), ("Площадки", "markets"),
-                 ("Уведомления", "alerts"), ("Избранное", "favorites"), ("Расходы", "fees"),
-                 ("Валюты", "currency"), ("Статус", "status")])
+MENU = keyboard([("🔎 Аналитика", "scan"), ("⚙️ Настройки", "settings"), ("🏪 Площадки", "markets"),
+                 ("🔔 Уведомления", "alerts"), ("⭐ Избранное", "favorites"), ("🧾 Расходы", "fees"),
+                 ("💱 Валюты", "currency"), ("📡 Статус", "status"), ("❔ Помощь", "help")])
+
+
+def settings_parent(field):
+    return "currency" if field in ("calculation_currency", "display_currencies") else "settings"
+
+
+def input_navigation(context):
+    pending = context.user_data.get("awaiting")
+    if not pending:
+        return keyboard([], home=True)
+    kind, field = pending
+    parent = settings_parent(field) if kind == "setting" else "feesview" if kind == "fee" else "rate_quote_menu"
+    return keyboard([], back=parent, home=True)
 
 
 def card_buttons(gift):
     key = listing_key(gift)
     rows = []
     if gift.url:
-        rows.append([Button("Открыть лот", url=gift.url)])
-    rows += [[Button("Сравнить площадки", callback_data=f"compare:{key}")],
-             [Button("Аналоги и источники", callback_data=f"evidence:{key}")],
-             [Button("В избранное", callback_data=f"favorite:{key}"), Button("Скрыть лот", callback_data=f"hide:{key}")]]
+        rows.append([Button("🔗 Открыть лот", url=gift.url)])
+    rows += [[Button("⚖️ Сравнить площадки", callback_data=f"compare:{key}")],
+             [Button("🔎 Аналоги и источники", callback_data=f"evidence:{key}")],
+             [Button("⭐ В избранное", callback_data=f"favorite:{key}"), Button("🙈 Скрыть лот", callback_data=f"hide:{key}")],
+             [Button("⬅️ К аналитике", callback_data="scan"), Button("🏠 Главное меню", callback_data="menu")]]
     return Keyboard(rows)
 
 
@@ -77,7 +99,7 @@ class Interface:
         cmd = update.effective_message.text.split()[0].split("@")[0][1:]
         if cmd == "cancel":
             context.user_data.clear()
-            await self.reply(update, "Ввод отменён.", MENU)
+            await self.reply(update, "↩️ Ввод отменён.", MENU)
             return
         context.user_data.pop("awaiting", None)
         await self.action(cmd, update, context)
@@ -86,19 +108,31 @@ class Interface:
         user = update.effective_user.id
         settings = self.store.settings(user)
         if cmd == "start":
-            await self.reply(update, "Gift Radar — аналитический бот. Новое меню:", ReplyKeyboardRemove())
-            await self.reply(update, "Gift Radar — аналитика коллекционных подарков.\nУведомления по умолчанию выключены. Настройте расходы и фильтры; рыночные источники пока отключены.", MENU)
-            await self.reply(update, settings_text(settings))
+            context.user_data.clear()
+            await self.reply(update, "🎁 Gift Radar — аналитический бот", ReplyKeyboardRemove())
+            await self.action("menu", update, context)
+        elif cmd == "menu":
+            context.user_data.clear()
+            await self.reply(update, "🎁 Gift Radar\n━━━━━━━━━━━━━━\n"
+                             "Аналитика коллекционных подарков\n\n"
+                             f"🔔 Уведомления: {'🟢 включены' if settings.alerts else '🔴 выключены'}\n"
+                             f"💱 Валюта порогов: {settings.calculation_currency}\n"
+                             "⚙️ Настройте фильтры и расходы под себя.\n\n"
+                             "⚪ Рыночные источники пока отключены.\n"
+                             "👇 Выберите раздел:", MENU)
         elif cmd == "help":
-            await self.reply(update, HELP, MENU)
+            await self.reply(update, "❔ Помощь\n━━━━━━━━━━━━━━\n" + HELP, keyboard([], home=True))
         elif cmd == "settings":
-            await self.reply(update, settings_text(settings), keyboard([(label, f"edit:{key}") for key, label in FIELDS.items()]))
+            await self.reply(update, "⚙️ Настройки\n━━━━━━━━━━━━━━\n" + settings_text(settings),
+                             keyboard([(label, f"edit:{key}") for key, label in FIELDS.items()], home=True))
         elif cmd == "markets":
-            lines = [f"{m}: {state}\n{detail}" for m, state, detail, _ in self.store.market_status()]
-            await self.reply(update, "\n\n".join(lines) + "\n\nИмпорт локального экспорта не означает подключение API.", MENU)
+            indicators = {"ready": "🟢", "disabled": "⚪", "unavailable": "🔴"}
+            lines = [f"{indicators.get(state, '🟡')} {m.title()}: {state}\n{detail}" for m, state, detail, _ in self.store.market_status()]
+            await self.reply(update, "🏪 Площадки\n━━━━━━━━━━━━━━\n" + "\n\n".join(lines) + "\n\nИмпорт локального экспорта не означает подключение API.", keyboard([], home=True))
         elif cmd == "alerts":
-            await self.reply(update, f"Уведомления {'включены' if settings.alerts else 'выключены'}. До 3 лотов за цикл, без повторов. Неполные расчёты не отправляются.",
-                             keyboard([("Выключить" if settings.alerts else "Включить", "togglealerts")]))
+            await self.reply(update, "🔔 Уведомления\n━━━━━━━━━━━━━━\n"
+                             f"{'🟢 Включены' if settings.alerts else '🔴 Выключены'}\n\nДо 3 лотов за цикл, без повторов. Неполные расчёты не отправляются.",
+                             keyboard([("🔕 Выключить" if settings.alerts else "🔔 Включить", "togglealerts")], home=True))
         elif cmd == "togglealerts":
             settings.alerts = not settings.alerts
             self.store.save_settings(user, settings)
@@ -106,7 +140,7 @@ class Interface:
         elif cmd == "scan":
             now = utcnow()
             if user in self.last_scan and (now - self.last_scan[user]).total_seconds() < 30:
-                await self.reply(update, "Повторный просмотр доступен через 30 секунд.")
+                await self.reply(update, "⏳ Повторный просмотр доступен через 30 секунд.", keyboard([], home=True))
                 return
             self.last_scan[user] = now
             values = self.radar.analyses(user, now=now)
@@ -118,38 +152,40 @@ class Interface:
                     seen.add(key)
                     chosen.append(value)
             if not chosen:
-                await self.reply(update, "Нет активных данных. Автосбор площадок пока отключён. Доступен импорт разрешённого экспорта; тестовые лоты в рабочий режим не подставляются.", MENU)
+                await self.reply(update, "🔎 Аналитика\n━━━━━━━━━━━━━━\nНет активных данных. Автосбор площадок пока отключён. Доступен импорт разрешённого экспорта; тестовые лоты в рабочий режим не подставляются.", keyboard([], home=True))
             for value in chosen[:3]:
                 await send_card(context.bot, user, value, settings, self.store)
             if len(chosen) > 3:
-                await self.reply(update, f"Показаны 3 из {len(chosen)} кандидатов. Настройте площадки и используйте сравнение. /scan показывает аналитические кандидаты; фильтры прибыли применяются к уведомлениям.")
+                await self.reply(update, f"Показаны 3 из {len(chosen)} кандидатов. Настройте площадки и используйте сравнение. /scan показывает аналитические кандидаты; фильтры прибыли применяются к уведомлениям.", keyboard([], home=True))
         elif cmd == "favorites":
             keys = self.store.marked("favorites", user)
             if not keys:
-                await self.reply(update, "Избранное пусто.", MENU)
+                await self.reply(update, "⭐ Избранное\n━━━━━━━━━━━━━━\nИзбранное пусто. Сохраняйте лоты кнопкой ⭐ в карточке.", keyboard([], home=True))
             for key in sorted(keys)[:20]:
                 gift = self.store.listing(key)
                 if gift:
                     await self.reply(update, f"{gift.name[:300]} · {gift.market} · {gift.price} {gift.currency} · {gift.status}",
-                                     keyboard([("Карточка", f"compare:{key}"), ("Удалить", f"unfavorite:{key}")]))
+                                     keyboard([("🎁 Карточка", f"compare:{key}"), ("🗑 Удалить", f"unfavorite:{key}")], home=True))
         elif cmd == "fees":
             context.user_data["route"] = {}
-            await self.reply(update, "Выберите площадку покупки. Для каждой пары площадок и валюты расходы отдельные.",
-                             keyboard([(m, f"routebuy:{m}") for m in MARKETS]))
+            await self.reply(update, "🧾 Расходы · шаг 1 из 3\n━━━━━━━━━━━━━━\nВыберите площадку покупки. Для каждой пары площадок и валюты расходы отдельные.",
+                             keyboard([(m.title(), f"routebuy:{m}") for m in MARKETS], home=True))
         elif cmd == "currency":
-            await self.reply(update, f"Пороги: {settings.calculation_currency}. Показ: {', '.join(settings.display_currencies)}.\n"
+            await self.reply(update, "💱 Валюты\n━━━━━━━━━━━━━━\n"
+                             f"Пороги: {settings.calculation_currency}. Показ: {', '.join(settings.display_currencies)}.\n"
                              "Конвертация только по сохранённому курсу с источником и временем, не старше часа. Курс влияет на показ, а сравнение продаж выполняется в исходной валюте.",
-                             keyboard([("Валюта порогов", "edit:calculation_currency"), ("Валюты показа", "edit:display_currencies"), ("Курс вручную", "ratebase")]))
+                             keyboard([("🎯 Валюта порогов", "edit:calculation_currency"), ("👁 Валюты показа", "edit:display_currencies"), ("✏️ Курс вручную", "ratebase")], home=True))
         elif cmd == "status":
-            await self.reply(update, f"Последнее получение данных: {self.store.last_sync()}\n"
+            await self.reply(update, "📡 Статус сервиса\n━━━━━━━━━━━━━━\n"
+                             f"Последнее получение данных: {self.store.last_sync()}\n"
                              f"В базе активных лотов: {len(self.store.listings())}; завершённых продаж за 30 дней: {len(self.store.sales(utcnow()))}.\n"
-                             "Проверка источников выполняется фоновым циклом. Наличие процесса не подтверждает доступ к рынкам.", MENU)
+                             "Проверка источников выполняется фоновым циклом. Наличие процесса не подтверждает доступ к рынкам.", keyboard([], home=True))
         elif cmd == "delete_me":
-            await self.reply(update, "Удалить мои настройки, избранное и историю уведомлений?", keyboard([("Удалить", "deleteconfirm"), ("Отмена", "start")]))
+            await self.reply(update, "🗑 Удалить мои настройки, избранное и историю уведомлений?", keyboard([("🗑 Удалить", "deleteconfirm"), ("↩️ Отмена", "menu")], home=True))
         elif cmd == "deleteconfirm":
             self.store.delete_user(user)
             context.user_data.clear()
-            await self.reply(update, "Ваши данные удалены. При следующей команде будут созданы настройки по умолчанию.")
+            await self.reply(update, "✅ Ваши данные удалены. При следующей команде будут созданы настройки по умолчанию.", keyboard([], home=True))
         else:
             await self.reply(update, "Это действие из прежнего меню. Отправьте /start, чтобы открыть Gift Radar.", MENU)
 
@@ -161,19 +197,22 @@ class Interface:
         user = update.effective_user.id
         data = query.data
         cmd, _, value = data.partition(":")
+        # Leaving any input screen cancels its draft; later text must not save it.
+        context.user_data.pop("awaiting", None)
         if cmd in ("favorite", "unfavorite", "hide", "compare", "evidence"):
             gift = self.store.listing(value)
             if not gift:
-                await self.reply(update, "Лот больше не доступен.")
+                await self.reply(update, "Лот больше не доступен.", keyboard([], home=True))
                 return
             if cmd == "evidence":
                 lines = [f"{text(k)}: {text(gift.provenance[k])}" for k in
                          ("collection", "model", "backdrop", "pattern", "symbol", "serial", "rare", "signature", "signature_text") if k in gift.provenance]
                 for i in range(0, max(1,len(lines)), 3):
-                    await update.effective_message.reply_text("<b>Происхождение свойств</b>\n" + "\n".join(lines[i:i+3]), parse_mode="HTML")
+                    await update.effective_message.reply_text("<b>🔎 Происхождение свойств</b>\n" + "\n".join(lines[i:i+3]), parse_mode="HTML",
+                                                              reply_markup=keyboard([], back=f"compare:{value}", home=True))
                 values = self.radar.analyses(user, key=value)
                 if not values or not values[0].sales:
-                    await self.reply(update, "Сопоставимые завершённые продажи не найдены.")
+                    await self.reply(update, "Сопоставимые завершённые продажи не найдены.", keyboard([], back=f"compare:{value}", home=True))
                     return
                 for sale in values[0].sales[:5]:
                     g = sale.gift
@@ -181,17 +220,21 @@ class Interface:
                                    f"Коллекция: {g.collection}; модель: {g.model}; фон: {g.backdrop}; узор: {g.pattern}; символ: {g.symbol}; "
                                    f"номер: {g.serial}; подпись: {'есть' if g.signature is True else 'нет' if g.signature is False else 'неизвестно'}\n"
                                    f"Основание: {sale.evidence[:500]}; источник: {g.source[:500]}")
-                    await self.reply(update, description[:3500], Keyboard([[Button("Источник продажи", url=g.url)]]) if g.url else None)
+                    nav = keyboard([], back=f"compare:{value}", home=True)
+                    rows = ([[Button("🔗 Источник продажи", url=g.url)]] if g.url else []) + list(nav.inline_keyboard)
+                    await self.reply(update, description[:3500], Keyboard(rows))
             elif cmd == "compare":
                 values = self.radar.analyses(user, key=value)
                 if not values:
-                    await self.reply(update, f"Статус лота: {gift.status}. Активная оценка недоступна.")
+                    await self.reply(update, f"Статус лота: {gift.status}. Активная оценка недоступна.", keyboard([], back="favorites", home=True))
                     return
-                await update.effective_message.reply_text("<b>Сравнение площадок</b>\n" + "\n".join(comparison(v) for v in values), parse_mode="HTML")
+                await update.effective_message.reply_text("<b>⚖️ Сравнение площадок</b>\n" + "\n".join(comparison(v) for v in values), parse_mode="HTML",
+                                                          reply_markup=keyboard([], back="scan", home=True))
                 await send_card(context.bot, user, values[0], self.store.settings(user), self.store)
             else:
                 self.store.mark("hidden" if cmd == "hide" else "favorites", user, value, remove=cmd == "unfavorite")
-                await self.reply(update, "Лот скрыт из просмотра и уведомлений." if cmd == "hide" else "Избранное обновлено.")
+                await self.reply(update, "🙈 Лот скрыт из просмотра и уведомлений." if cmd == "hide" else "⭐ Избранное обновлено.",
+                                 keyboard([], back="favorites" if cmd == "unfavorite" else "scan" if cmd == "hide" else f"compare:{value}", home=True))
         elif cmd == "edit":
             context.user_data.pop("awaiting", None)
             options = {"history_days": [(str(x), str(x)) for x in (7,14,30)],
@@ -199,13 +242,14 @@ class Interface:
                        "min_liquidity": [("Любая активность", "0"), ("Низкая", "1"), ("Средняя", "2"), ("Высокая", "3")],
                        "calculation_currency": [(x, x) for x in CURRENCIES]}
             if value in options:
-                await self.reply(update, "Выберите значение:", keyboard([(label, f"set:{value}:{v}") for label, v in options[value]]))
+                await self.reply(update, "⚙️ Выберите значение:",
+                                 keyboard([(label, f"set:{value}:{v}") for label, v in options[value]], back=settings_parent(value), home=True))
             elif value in ("buy_markets", "sell_markets", "display_currencies"):
                 await self.list_choices(update, context, value)
             elif value in FIELDS:
                 context.user_data["awaiting"] = ("setting", value)
                 hint = "Названия через запятую; - чтобы убрать ограничение." if value in ("collections", "models", "backdrops", "patterns", "symbols") else "Введите число. Для скидки подписи - означает не задана."
-                await self.reply(update, f"{FIELDS[value]}. {hint} /cancel — отмена.")
+                await self.reply(update, f"{FIELDS[value]}\n━━━━━━━━━━━━━━\n{hint}\n\n⬅️ Назад — отменить ввод.", input_navigation(context))
         elif cmd == "set":
             field, raw = value.split(":",1)
             settings = self.store.settings(user)
@@ -218,7 +262,8 @@ class Interface:
                 return
             setattr(settings, field, raw)
             self.store.save_settings(user, settings)
-            await self.reply(update, "Сохранено. При смене валюты проверьте числовые пороги.", MENU)
+            await self.reply(update, "✅ Сохранено." + (" При смене валюты проверьте числовые пороги." if field == "calculation_currency" else ""),
+                             keyboard([], back=settings_parent(field), home=True))
         elif cmd == "listtoggle":
             field, choice = value.split(":", 1)
             choices = CURRENCIES if field == "display_currencies" else MARKETS
@@ -228,7 +273,7 @@ class Interface:
             old = getattr(settings, field)
             new = [x for x in old if x != choice] if choice in old else old + [choice]
             if not new:
-                await self.reply(update, "Оставьте хотя бы одно значение.")
+                await self.reply(update, "Оставьте хотя бы одно значение.", keyboard([], back=f"edit:{field}", home=True))
                 return
             setattr(settings, field, new)
             self.store.save_settings(user, settings)
@@ -237,58 +282,91 @@ class Interface:
             if value not in MARKETS:
                 return
             context.user_data["route"] = {"buy": value}
-            await self.reply(update, "Выберите площадку перепродажи:", keyboard([(m, f"routesell:{m}") for m in MARKETS]))
+            await self.route_sell_menu(update, context)
+        elif cmd == "route_sell_menu":
+            await self.route_sell_menu(update, context)
         elif cmd == "routesell":
             if value not in MARKETS or "buy" not in context.user_data.get("route", {}):
                 return
             context.user_data["route"]["sell"] = value
-            await self.reply(update, "Валюта расходов:", keyboard([(c, f"routecurrency:{c}") for c in CURRENCIES]))
+            context.user_data["route"].pop("currency", None)
+            await self.route_currency_menu(update, context)
+        elif cmd == "route_currency_menu":
+            await self.route_currency_menu(update, context)
         elif cmd == "routecurrency":
             if value not in CURRENCIES or "sell" not in context.user_data.get("route", {}):
                 return
             context.user_data["route"]["currency"] = value
             await self.fees_menu(update, context)
+        elif cmd == "feesview":
+            await self.fees_menu(update, context)
         elif cmd == "fee":
             if value not in FEE_NAMES or "currency" not in context.user_data.get("route", {}):
-                await self.reply(update, "Начните настройку маршрута командой /fees.")
+                await self.reply(update, "Выберите маршрут расходов заново.", keyboard([("🧾 Выбрать маршрут", "fees")], home=True))
                 return
             context.user_data["awaiting"] = ("fee", value)
-            await self.reply(update, f"{FEE_LABELS[value]}: сумма в валюте маршрута или процент с %. - означает неизвестно.\n"
-                             "0 вводите только если сбор действительно не применяется. Процент продажи/вывода от цены перепродажи, прочие проценты от цены покупки. Значение будет отмечено как пользовательское.")
+            await self.reply(update, f"✏️ {FEE_LABELS[value]}\n━━━━━━━━━━━━━━\nСумма в валюте маршрута или процент с %. - означает неизвестно.\n"
+                             "0 вводите только если сбор действительно не применяется. Процент продажи/вывода от цены перепродажи, прочие проценты от цены покупки. Значение будет отмечено как пользовательское.", input_navigation(context))
         elif cmd == "ratebase":
-            await self.reply(update, "Исходная валюта курса:", keyboard([(c, f"ratequote:{c}") for c in CURRENCIES]))
+            context.user_data.pop("rate_base", None)
+            await self.reply(update, "💱 Ручной курс · шаг 1 из 3\n━━━━━━━━━━━━━━\nИсходная валюта курса:",
+                             keyboard([(c, f"ratequote:{c}") for c in CURRENCIES], back="currency", home=True))
         elif cmd == "ratequote":
             if value not in CURRENCIES:
                 return
             context.user_data["rate_base"] = value
-            await self.reply(update, f"Сколько единиц целевой валюты стоит 1 {value}? Выберите целевую валюту:",
-                             keyboard([(c, f"ratevalue:{c}") for c in CURRENCIES if c != value]))
+            await self.rate_quote_menu(update, context)
+        elif cmd == "rate_quote_menu":
+            await self.rate_quote_menu(update, context)
         elif cmd == "ratevalue":
             if value not in CURRENCIES or "rate_base" not in context.user_data:
                 return
             context.user_data["awaiting"] = ("rate", value)
-            await self.reply(update, "Введите курс: число единиц целевой валюты за одну единицу исходной. Источник будет помечен «введён пользователем». Срок актуальности — один час.")
+            await self.reply(update, "💱 Ручной курс · шаг 3 из 3\n━━━━━━━━━━━━━━\nВведите курс: число единиц целевой валюты за одну единицу исходной. Источник будет помечен «введён пользователем». Срок актуальности — один час.", input_navigation(context))
         else:
             await self.action(cmd, update, context)
 
     async def list_choices(self, update, context, field):
         chosen = getattr(self.store.settings(update.effective_user.id), field)
         options = CURRENCIES if field == "display_currencies" else MARKETS
-        await self.reply(update, "Нажимайте, чтобы включить или выключить:",
-                         keyboard([(("✓ " if c in chosen else "") + c, f"listtoggle:{field}:{c}") for c in options] + [("Готово", "settings")]))
+        parent = settings_parent(field)
+        await self.reply(update, "✅ Выбор значений\n━━━━━━━━━━━━━━\nНажимайте, чтобы включить или выключить:",
+                         keyboard([(("🟢 " if c in chosen else "⚪ ") + c, f"listtoggle:{field}:{c}") for c in options] + [("✅ Готово", parent)], back=parent, home=True))
+
+    async def route_sell_menu(self, update, context):
+        if "buy" not in context.user_data.get("route", {}):
+            await self.action("fees", update, context)
+            return
+        await self.reply(update, "🧾 Расходы · шаг 2 из 3\n━━━━━━━━━━━━━━\nВыберите площадку перепродажи:",
+                         keyboard([(m.title(), f"routesell:{m}") for m in MARKETS], back="fees", home=True))
+
+    async def route_currency_menu(self, update, context):
+        if "sell" not in context.user_data.get("route", {}):
+            await self.route_sell_menu(update, context)
+            return
+        await self.reply(update, "🧾 Расходы · шаг 3 из 3\n━━━━━━━━━━━━━━\nВалюта расходов:",
+                         keyboard([(c, f"routecurrency:{c}") for c in CURRENCIES], back="route_sell_menu", home=True))
+
+    async def rate_quote_menu(self, update, context):
+        base = context.user_data.get("rate_base")
+        if base not in CURRENCIES:
+            await self.reply(update, "Выберите исходную валюту заново.", keyboard([("💱 Выбрать валюту", "ratebase")], back="currency", home=True))
+            return
+        await self.reply(update, f"💱 Ручной курс · шаг 2 из 3\n━━━━━━━━━━━━━━\nСколько единиц целевой валюты стоит 1 {base}? Выберите целевую валюту:",
+                         keyboard([(c, f"ratevalue:{c}") for c in CURRENCIES if c != base], back="ratebase", home=True))
 
     async def fees_menu(self, update, context):
         r = context.user_data.get("route", {})
         if not all(k in r for k in ("buy", "sell", "currency")):
-            await self.reply(update, "Выберите маршрут заново: /fees")
+            await self.reply(update, "Выберите маршрут заново.", keyboard([("🧾 Выбрать маршрут", "fees")], home=True))
             return
         route = self.store.route(update.effective_user.id, r["buy"], r["sell"], r["currency"])
-        lines = [f"{r['buy']} → {r['sell']} · {r['currency']} · {route.conditions}"]
+        lines = ["🧾 Расходы маршрута\n━━━━━━━━━━━━━━", f"{r['buy']} → {r['sell']} · {r['currency']} · {route.conditions}"]
         for name in FEE_NAMES:
             fee = route.fees.get(name, Fee())
             lines.append(f"{FEE_LABELS[name]}: {'неизвестно' if fee.value is None else str(fee.value)+('%' if fee.percent else ' '+r['currency'])}; "
                          f"{fee.source}; дата {fee.updated_at.isoformat() if fee.updated_at else 'неизвестна'}; {'подтверждено' if fee.confirmed else 'не подтверждено площадкой'}")
-        await self.reply(update, "\n".join(lines), keyboard([(label, f"fee:{name}") for name, label in FEE_LABELS.items()]))
+        await self.reply(update, "\n".join(lines), keyboard([("✏️ " + label, f"fee:{name}") for name, label in FEE_LABELS.items()], back="route_currency_menu", home=True))
 
     async def input(self, update, context):
         if update.effective_chat.type != "private":
@@ -297,6 +375,7 @@ class Interface:
             await self.reply(update, "Выберите действие в меню.", MENU)
             return
         kind, field = context.user_data["awaiting"]
+        navigation = input_navigation(context)
         raw = update.effective_message.text.strip()
         user = update.effective_user.id
         try:
@@ -323,11 +402,11 @@ class Interface:
                 value = money(raw.replace(",", "."), positive=True)
                 self.store.save_rate(Rate(context.user_data["rate_base"], field, value, utcnow(), "введён пользователем"), user=user)
             context.user_data.pop("awaiting", None)
-            await self.reply(update, "Сохранено.", MENU)
+            await self.reply(update, "✅ Сохранено.", navigation)
             if kind == "fee":
                 await self.fees_menu(update, context)
         except (ValueError, ArithmeticError, KeyError):
-            await self.reply(update, "Некорректное значение. Проверьте диапазон и формат; повторите ввод или /cancel.")
+            await self.reply(update, "⚠️ Некорректное значение. Проверьте диапазон и формат; повторите ввод или нажмите «Назад».", navigation)
 
 
 def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=None, polling_request=None):

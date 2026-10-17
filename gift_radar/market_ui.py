@@ -134,6 +134,7 @@ class MarketInterface:
             items = [("🔁 Проверить доступ", "source_check"), ("🔑 Заменить ключ", "source_key"), ("🗑 Удалить доступ", "source_delete")]
         else:
             items = [("🔑 Подключить", "source_key"), ("📖 Как получить ключ", "source_how")]
+        items.append(("📄 Описание API Thermos", "source_spec"))
         await self.ui.show(update, "\n".join(lines), self.keyboard(items, width=1, back="markets"))
 
     async def ask_key(self, update, context):
@@ -175,6 +176,8 @@ class MarketInterface:
             await self.ui.show(update, "🗑 Удалить сохранённый ключ Thermos?\n\nНастройки площадок и уже полученные данные останутся. "
                                "Ключ перестанет использоваться ботом; отозвать его у Thermos нужно через сам Thermos.",
                                self.keyboard([("🗑 Удалить ключ", "source_delete_yes")], back="source"))
+        elif cmd == "source_spec":
+            await self.spec_flow(update, context)
         elif cmd == "source_delete_yes":
             self.source.delete_key()
             await self.source_page(update, "Ключ удалён.")
@@ -232,6 +235,26 @@ class MarketInterface:
             await self.ui.action("analysis", update, context)
         else:
             await self.page(market, update, notice)
+
+    async def spec_flow(self, update, context):
+        """Public OpenAPI file for the developer; the key is never sent."""
+        from .spec import INTERESTING, download_spec
+        await self.ui.show(update, "⏳ Скачиваю публичное описание API Thermos…", None)
+        result = await download_spec()
+        if not private_admin(update):
+            return
+        if result.state != "ok":
+            await self.ui.reply(update, f"⚠️ {result.message}", self.keyboard([("🔁 Повторить", "source_spec")], back="source"))
+            return
+        found = [p for p in result.paths if any(word in p.lower() for word in INTERESTING)]
+        caption = (f"📄 Описание API Thermos: {len(result.paths)} методов.\n"
+                   "Перешли этот файл разработчику — по нему подключается сбор лотов. Ключа в файле нет.")
+        await context.bot.send_document(chat_id=update.effective_user.id, document=result.content,
+                                        filename="thermos-openapi.json", caption=caption,
+                                        protect_content=False)  # Public, key-free file the admin must be able to forward.
+        lines = ["Методы, похожие на каталог, рынок и историю продаж:"] + [f"• {p}" for p in found[:30]] if found else \
+                ["Методов со словами catalog/market/search/history в описании не найдено."]
+        await self.ui.reply(update, "\n".join(lines)[:3800], self.nav("source"))
 
     async def check_flow(self, update):
         if not private_admin(update):

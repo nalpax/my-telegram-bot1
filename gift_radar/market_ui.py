@@ -256,6 +256,47 @@ class MarketInterface:
                 ["Методов со словами catalog/market/search/history в описании не найдено."]
         await self.ui.reply(update, "\n".join(lines)[:3800], self.nav("source"))
 
+    async def account_summary(self):
+        """Real data from the Thermos account; returns text lines, never raises."""
+        from .sources import ThermosError
+        try:
+            lots = await self.source.my_lots()
+            sales = await self.source.my_sales()
+        except ThermosError as exc:
+            return [f"Аккаунт Thermos: ⚠️ данные не получены — {exc.text}."]
+        on_sale = [x for x in lots if x["status"] in ("LISTED", "AWAITING_PRICE_CHANGE", "AWAITING_MARKET_EXPORT", "AWAITING_IMPORT")]
+        return [f"Аккаунт Thermos: ✅ данные получены — лотов на продаже {len(on_sale)}, продаж в истории {len(sales)}."]
+
+    async def my_lots(self, update):
+        from .sources import ThermosError
+        if not self.source.key_saved():
+            await self.source_page(update, "🔒 Сначала подключи Thermos — тогда здесь появятся твои лоты и продажи.")
+            return
+        await self.ui.show(update, "⏳ Загружаю твои лоты из Thermos…", None)
+        try:
+            lots = await self.source.my_lots()
+            sales = await self.source.my_sales()
+        except ThermosError as exc:
+            if private_admin(update):
+                await self.ui.reply(update, f"⚠️ Не удалось загрузить: {exc.text}.", self.keyboard([("🔁 Повторить", "mylots")], back="search"))
+            return
+        if not private_admin(update):
+            return
+        def money(value):
+            return f"{value.normalize():f} TON" if value is not None else "цена неизвестна"
+        lines = ["📦 Мои лоты Thermos\n━━━━━━━━━━━━━━"]
+        if lots:
+            for x in lots[:25]:
+                status = {"LISTED": "на продаже", "SOLD": "продан", "FILLED": "исполнен"}.get(x["status"], x["status"].lower())
+                lines.append(f"• {x['title']} — {money(x['price'])} · {x['market']} · {status}")
+        else:
+            lines.append("Лотов на продаже нет.")
+        if sales:
+            lines.append("\nПоследние продажи:")
+            lines += [f"• {s['title']} — {money(s['amount'])} · {s['market']} · {s['at']}" for s in sales[-5:][::-1]]
+        lines.append("\nО новых продажах бот сообщает сам, если включены «🔔 Автоуведомления».")
+        await self.ui.reply(update, "\n".join(lines)[:3900], self.keyboard([("🔄 Обновить", "mylots")], back="search"))
+
     async def check_flow(self, update):
         if not private_admin(update):
             return
@@ -282,6 +323,10 @@ class MarketInterface:
         if not private_admin(update):
             return
         body = self.report_text(user, report)
+        if self.source.access().usable:
+            body += "\n\n" + "\n".join(await self.account_summary())
+            if not private_admin(update):
+                return
         markup = self.keyboard([("🔎 Поиск", "search"), ("🔔 Уведомления", "alerts"), ("🏪 Площадки", "markets")], width=3)
         try:
             await status.edit_text(body, reply_markup=markup, disable_web_page_preview=True)

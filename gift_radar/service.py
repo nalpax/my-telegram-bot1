@@ -5,7 +5,7 @@ from dataclasses import dataclass, field
 
 from .analytics import rejection, estimate
 from .models import MARKETS, utcnow
-from .sources import ATTENTION, COVERED, TITLES, TRANSIENT, ThermosSource
+from .sources import ATTENTION, COVERED, TITLES, TRANSIENT, ThermosError, ThermosSource
 from .storage import listing_key
 from .security import is_admin
 
@@ -168,6 +168,38 @@ class Radar:
                     self.store.error("telegram", type(exc).__name__)
                     log.warning("error_notice_failed category=%s", type(exc).__name__)
 
+    async def check_sales(self, notifier):
+        """Notify admins with alerts on about new sales on their Thermos account, once per sale."""
+        recipients = [u for u in self.store.users() if is_admin(u) and self.store.settings(u).alerts]
+        # A saved but unchecked key is verified by the read itself; a rejected key is not retried.
+        if not recipients or not self.source.key_saved() or self.source.access().state in ATTENTION:
+            return
+        try:
+            sales = await self.source.my_sales()
+        except ThermosError as exc:
+            log.warning("thermos_sales_failed category=%s", exc.state)
+            return
+        last = self.store.meta("thermos_last_sale_id")
+        newest = max((s["id"] for s in sales), default=None)
+        if last is None:
+            # First run: remember existing history instead of announcing old sales.
+            self.store.set_meta("thermos_last_sale_id", newest if newest is not None else 0)
+            return
+        fresh = [s for s in sales if s["id"] > int(last)]
+        if not fresh:
+            return
+        self.store.set_meta("thermos_last_sale_id", newest)
+        for sale in fresh[-5:]:
+            amount = f"{sale['amount'].normalize():f} TON" if sale["amount"] is not None else "сумма неизвестна"
+            text = f"💰 Продажа в Thermos: {sale['title']}\n{amount} · {sale['market'] or 'площадка не указана'} · {sale['at']} UTC"
+            for user in recipients:
+                if not is_admin(user):
+                    continue
+                try:
+                    await notifier(user, text)
+                except Exception as exc:
+                    self.store.error("telegram", type(exc).__name__)
+
     async def tick(self, sender, notifier=None):
         if self.lock.locked():
             return
@@ -175,6 +207,7 @@ class Radar:
             await self.synchronize()
             if notifier:
                 await self.notify_problems(notifier)
+                await self.check_sales(notifier)
             now = utcnow()
             for user in self.store.users():
                 if not is_admin(user):

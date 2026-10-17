@@ -1,7 +1,7 @@
 """Credential checks against documented auth endpoints, without market operations."""
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from urllib.parse import quote, quote_plus
 
 from httpx import AsyncClient, HTTPError, TimeoutException
@@ -16,6 +16,8 @@ THERMOS_AUTH_URL = "https://backend.thermos.gifts/api/v1/auth/api-token"
 class KeyCheck:
     state: str
     message: str
+    # JWT kept only in memory for read-only requests; never shown, logged or stored.
+    token: str | None = field(default=None, repr=False, compare=False)
 
 
 class MarketKeyChecker:
@@ -34,17 +36,21 @@ class MarketKeyChecker:
         for value in (key, quote(key, safe=""), quote_plus(key, safe="")):
             register_secret(value)
         async with self.lock:
-            loop = asyncio.get_running_loop()
-            delay = self.next_request - loop.time()
-            if delay > 0:
-                await asyncio.sleep(delay)
-            self.next_request = loop.time() + 0.5  # Official basic limit: 2 requests/s.
+            await self.pace()
             try:
                 return await asyncio.wait_for(self._thermos(key), timeout=12)
             except (TimeoutError, TimeoutException):
                 return KeyCheck("timeout", "⚠️ Thermos не ответил вовремя. Это не значит, что ключ неверный; ключ сохранён, повтори проверку позже.")
             except (HTTPError, OSError):
                 return KeyCheck("network_error", "⚠️ Нет соединения с Thermos. Это сетевой сбой, а не ошибка ключа; ключ сохранён. Проверь доступ хостинга к backend.thermos.gifts и повтори позже.")
+
+    async def pace(self):
+        """Call with the lock held: official basic limit is 2 requests per second."""
+        loop = asyncio.get_running_loop()
+        delay = self.next_request - loop.time()
+        if delay > 0:
+            await asyncio.sleep(delay)
+        self.next_request = loop.time() + 0.5
 
     async def _thermos(self, key):
         # No redirects: never forward a credential to a different endpoint.
@@ -75,4 +81,4 @@ class MarketKeyChecker:
                     return KeyCheck("unexpected_response", "⚠️ Thermos не вернул токен авторизации. Действительность ключа не подтверждена.")
                 register_secret(token)
                 # Discard the JWT and account details; no trading or balance calls.
-                return KeyCheck("verified", "✅ Thermos подтвердил API-ключ. Авторизация работает.")
+                return KeyCheck("verified", "✅ Thermos подтвердил API-ключ. Авторизация работает.", token)

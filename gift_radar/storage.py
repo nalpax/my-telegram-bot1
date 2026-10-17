@@ -287,6 +287,14 @@ class Store:
         with self.db:
             self.db.execute("INSERT INTO sync_errors(market,category,at) VALUES (?,?,?)", (market, category, utcnow().isoformat()))
 
+    def meta(self, name, default=None):
+        row = self.db.execute("SELECT value FROM metadata WHERE name=?", (name,)).fetchone()
+        return row[0] if row else default
+
+    def set_meta(self, name, value):
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO metadata VALUES (?,?)", (name, str(value)))
+
     def last_sync(self):
         r = self.db.execute("SELECT value FROM metadata WHERE name='last_sync'").fetchone()
         return r[0] if r else "данные ещё не получены"

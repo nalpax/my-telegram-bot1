@@ -89,9 +89,12 @@ def test_addition_triggers_auth_check_without_host_variables(monkeypatch):
             await app.process_update(callback(app, "market_key:tonnel"))
             assert "market_env:tonnel" not in [b.get("callback_data") for b in last_buttons(request)]
             await app.process_update(text_input(app, secret))
-            assert len(calls) == 1
+            auth = lambda: [c for c in calls if c.url.path == "/api/v1/auth/api-token"]
+            assert len(auth()) == 1
             await app.process_update(callback(app, "market_check:tonnel"))
-            assert len(calls) == 2
+            assert len(auth()) == 2
+            # The key goes only to the auth endpoint; reads carry the JWT.
+            assert all("api_token" not in str(c.url) for c in calls if c not in auth())
         messages = [p["text"] for name, p in request.calls if name in ("sendMessage", "editMessageText")]
         assert any("Thermos подтвердил API-ключ" in t for t in messages)
         assert store.source_state("thermos")[0] == "verified"

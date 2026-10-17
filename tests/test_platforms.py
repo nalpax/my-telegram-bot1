@@ -136,7 +136,9 @@ def test_connection_checks_then_loads_and_reports_without_commands(monkeypatch):
             await app.process_update(callback(app, "source_key"))
             await app.process_update(text_input(app, SECRET))
         shown = texts(request)
-        assert len(calls) == 1 and str(calls[0].url).startswith(key_checks.THERMOS_AUTH_URL)
+        assert str(calls[0].url).startswith(key_checks.THERMOS_AUTH_URL)
+        assert [c.url.path for c in calls[1:]] == ["/api/v1/gifts/me/on-sale"]  # Account summary read only.
+        assert calls[1].headers["authorization"] == f"Bearer {JWT}" and SECRET not in str(calls[1].url)
         assert any("Thermos подтвердил API-ключ" in t for t in shown)
         assert any("Загружаю первые данные" in t for t in shown)
         report = next(t for t in shown if t.startswith("📦 Первая загрузка"))

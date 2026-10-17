@@ -175,7 +175,9 @@ class Interface:
             await self.show(update, "🔎 Поиск\n━━━━━━━━━━━━━━\n"
                             f"Активных лотов в базе: {listings}\nПоследнее получение данных: {self.store.last_sync()}\n\n"
                             "«Найти» показывает до 3 лучших кандидатов. «Обновить данные» запрашивает подключённые площадки сейчас.",
-                            keyboard([("▶️ Найти", "scan"), ("🔄 Обновить данные", "refresh"), ("⭐ Избранное", "favorites")], back="menu"))
+                            keyboard([("▶️ Найти", "scan"), ("🔄 Обновить данные", "refresh"), ("📦 Мои лоты Thermos", "mylots"), ("⭐ Избранное", "favorites")], back="menu"))
+        elif cmd == "mylots":
+            await self.markets.my_lots(update)
         elif cmd == "refresh":
             await self.markets.load_flow(update, context)
         elif cmd == "settings":

@@ -7,6 +7,9 @@ from pathlib import Path
 from cryptography.fernet import Fernet, InvalidToken
 
 from .models import MARKETS
+
+# Vault contexts: marketplaces plus the Thermos aggregator, which serves all three.
+SOURCES = (*MARKETS, "thermos")
 from .security import private_file
 
 
@@ -15,7 +18,7 @@ def credential_value(value):
         raise ValueError("Invalid credential")
     value = value.strip()
     if (not 8 <= len(value) <= 4096 or any(ord(c) < 32 or ord(c) == 127 for c in value)
-            or re.fullmatch(r"(?:TONNEL|PORTALS|MRKT)_[A-Z0-9_]+", value)
+            or re.fullmatch(r"(?:TONNEL|PORTALS|MRKT|THERMOS)_[A-Z0-9_]+", value)
             or re.search(r"\b[0-9]{6,12}:[A-Za-z0-9_-]{25,}\b", value)
             or value in {os.environ.get("BOT_TOKEN"), os.environ.get("TELEGRAM_BOT_TOKEN")}):
         raise ValueError("Invalid credential")
@@ -57,7 +60,7 @@ class CredentialVault:
             raise ValueError("Credential vault unavailable; restore the master key") from None
 
     def encrypt(self, market, value, allow_create=False):
-        if market not in MARKETS:
+        if market not in SOURCES:
             raise ValueError("Invalid market")
         payload = json.dumps({"market": market, "key": credential_value(value)}).encode()
         return self.cipher(allow_create).encrypt(payload).decode("ascii")

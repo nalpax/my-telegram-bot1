@@ -52,7 +52,38 @@ class MRKTAdapter(DisabledAdapter):
     market = "mrkt"
 
 
-def registry(store=None) -> list[MarketAdapter]:
+class ThermosMarketAdapter:
+    """Marketplace reached through Thermos. Access is real; data reading waits for a documented contract."""
+    # Set to True only together with an implementation of a documented Thermos read method.
+    active_listings = False
+    completed_sales = False
+
+    def __init__(self, market, source):
+        self.market = market
+        self.source = source
+
+    async def get_active_listings(self):
+        return []
+
+    async def get_completed_sales(self):
+        return []
+
+    async def get_listing_details(self, listing_id):
+        return None
+
+    async def health_check(self):
+        from .sources import MISSING_CONTRACT
+        access = await self.source.ensure_access()
+        if not access.usable:
+            return Health(access.state, "Нет подтверждённого доступа Thermos: " + access.label)
+        if not (self.active_listings or self.completed_sales):
+            return Health("no_contract", "Доступ подтверждён, но автосбор недоступен: " + MISSING_CONTRACT)
+        return Health("ready", "Доступ подтверждён", self.active_listings, self.completed_sales)
+
+
+def registry(store=None, source=None) -> list[MarketAdapter]:
+    if source is not None:
+        return [ThermosMarketAdapter(m, source) for m in ("portals", "mrkt", "tonnel")]
     return [PortalsAdapter(store), TonnelAdapter(store), MRKTAdapter(store)]
 
 

@@ -92,7 +92,9 @@ def main(argv=None):
                 raise ValueError("Scan interval >=30 seconds; retention >=30 days")
             configure_logging(os.environ.get("GIFT_RADAR_LOG_DIR", "logs"))
             from .telegram_ui import build_app
-            app = build_app(token, store, Radar(store, registry(store)), seconds, days)
+            from .sources import ThermosSource
+            source = ThermosSource(store)
+            app = build_app(token, store, Radar(store, registry(store, source), source), seconds, days)
             if args.command == "telegram-check":
                 async def check():
                     async with app:
@@ -100,7 +102,7 @@ def main(argv=None):
                         print("Telegram Bot API: getMe успешно выполнен.")
                 asyncio.run(check())
                 return 0
-            print("Запуск Telegram polling; доступ к площадкам смотрите в /markets. Для остановки Ctrl+C.")
+            print("Запуск Telegram polling; площадки подключаются в боте: /markets. Для остановки Ctrl+C.")
             app.run_polling(timeout=30, bootstrap_retries=0, drop_pending_updates=False, allowed_updates=["message", "callback_query"])
     except Exception as exc:
         # Exception bodies can include credentials/URLs. Only category is safe to report.

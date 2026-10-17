@@ -150,7 +150,8 @@ def test_duration_needs_five_samples(sales):
 
 
 @pytest.mark.parametrize("changes", [{"min_sales": 0}, {"history_days": 1}, {"signature_discount": 101},
-                                      {"display_currencies": ["USD", "USD"]}, {"buy_markets": []}, {"min_roi": "NaN"}])
+                                      {"display_currencies": ["USD", "USD"]}, {"buy_markets": ["unknown"]}, {"sell_markets": ["mrkt", "mrkt"]},
+                                      {"min_roi": "NaN"}, {"sound": "yes"}])
 def test_settings_validation(changes):
     with pytest.raises(ValueError):
         Settings(**changes).validate()

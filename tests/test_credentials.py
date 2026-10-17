@@ -110,8 +110,9 @@ def test_wrong_input_rejected_without_retaining_it(raw):
     assert raw not in str(error.value)
 
 
-@pytest.mark.parametrize("market", ["tonnel", "portals", "mrkt"])
-def test_admin_enters_actual_key_and_back_cancels(monkeypatch, market):
+@pytest.mark.parametrize("button", ["source_key", "market_key:tonnel", "market_key:portals", "market_key:mrkt"])
+def test_admin_enters_actual_key_and_back_cancels(monkeypatch, button):
+    market = button.partition(":")[2] or "tonnel"
     monkeypatch.setenv("ADMIN_IDS", "1")
     secret = "SYNTHETIC-DIRECT-KEY-" + market
     monkeypatch.setenv(f"{market.upper()}_API_KEY", secret)
@@ -125,23 +126,25 @@ def test_admin_enters_actual_key_and_back_cancels(monkeypatch, market):
             save(selected, value)
         store.save_credential = checked_save
         async with app:
-            await app.process_update(callback(app, f"market_key:{market}", user=2))
+            await app.process_update(callback(app, button, user=2))
             await app.process_update(text_input(app, secret, user=2))
-            assert not store.connection(market).credential_present
-            await app.process_update(callback(app, f"market_key:{market}"))
+            assert not store.has_credential("thermos")
+            await app.process_update(callback(app, button))
             await app.process_update(text_input(app, f"{market.upper()}_API_KEY"))
-            assert not store.connection(market).has_saved_key
+            assert not store.has_credential("thermos")
             await app.process_update(text_input(app, secret))
-            assert store.credential(market) == secret
+            # Every marketplace button stores one Thermos key, never a per-market copy.
+            assert store.credential("thermos") == secret
+            assert not store.connection(market).has_saved_key
             assert "awaiting" not in app.user_data[1]
-            await app.process_update(callback(app, f"market_key:{market}"))
+            await app.process_update(callback(app, button))
             await app.process_update(callback(app, f"market:{market}"))
             await app.process_update(text_input(app, "SYNTHETIC-CANCELLED-REPLACEMENT"))
-            assert store.credential(market) == secret
+            assert store.credential("thermos") == secret
             await app.process_update(callback(app, "edit:collections"))
             await app.process_update(text_input(app, secret))
             assert store.settings(1).collections == []
-        texts = [p["text"] for name, p in request.calls if name == "sendMessage"]
+        texts = [p["text"] for name, p in request.calls if name in ("sendMessage", "editMessageText")]
         assert any("Отправь сам API-ключ" in text for text in texts)
         assert any("Ключ сохранён в зашифрованном виде" in text for text in texts)
         assert all(secret not in text for text in texts)

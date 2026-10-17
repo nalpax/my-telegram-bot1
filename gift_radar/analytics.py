@@ -161,27 +161,72 @@ def estimate(listing: Gift, sales: list[Sale], settings: Settings, target: str,
     return result
 
 
-def eligible(value: Estimate, settings: Settings, now: datetime) -> bool:
+# Why an estimate is not a confirmed opportunity; texts tell the user what to change.
+REASONS = {
+    "inactive": "лот уже не активен",
+    "stale": "данные лота старше 30 минут",
+    "currency": "валюта лота отличается от валюты порогов (Настройки → Валюты)",
+    "buy_market": "площадка выключена для поиска покупок",
+    "sell_market": "площадка выключена для поиска перепродажи",
+    "max_price": "цена выше «Макс. цены» (Настройки → Пороги)",
+    "few_sales": "мало похожих завершённых продаж (уменьшите «Минимум аналогов» или увеличьте период)",
+    "low_confidence": "низкая уверенность сопоставления (неизвестные свойства или расширенное сравнение)",
+    "liquidity": "ниже выбранной ликвидности",
+    "filters": "не проходит фильтры коллекций, моделей, фонов, узоров или символов",
+    "signature": "не проходит фильтр подписи",
+    "rare": "редкие варианты выключены в Анализе",
+    "no_scenarios": "расчёт перепродажи недоступен",
+    "fee_dates": "расходы маршрута без даты или старше 30 дней (Настройки → Расходы)",
+    "unknown_costs": "не заданы расходы маршрута (Настройки → Расходы)",
+    "below_profit": "прибыль ниже «Мин. прибыли»",
+    "below_roi": "ROI ниже «Мин. ROI»",
+}
+INCOMPLETE = frozenset({"few_sales", "low_confidence", "no_scenarios", "fee_dates", "unknown_costs"})
+
+
+def rejection(value: Estimate, settings: Settings, now: datetime) -> str | None:
     x = value.listing
-    if x.status != "active" or x.updated_at < now - timedelta(minutes=30) or x.updated_at > now:
-        return False
-    if x.currency != settings.calculation_currency or x.market not in settings.buy_markets or value.target not in settings.sell_markets:
-        return False
-    if x.price > settings.max_price or value.period.count < settings.min_sales or value.confidence == "низкая":
-        return False
+    if x.status != "active":
+        return "inactive"
+    if x.updated_at < now - timedelta(minutes=30) or x.updated_at > now:
+        return "stale"
+    if x.currency != settings.calculation_currency:
+        return "currency"
+    if x.market not in settings.buy_markets:
+        return "buy_market"
+    if value.target not in settings.sell_markets:
+        return "sell_market"
+    if x.price > settings.max_price:
+        return "max_price"
+    if value.period.count < settings.min_sales:
+        return "few_sales"
+    if value.confidence == "низкая":
+        return "low_confidence"
     if LIQUIDITY.index(value.liquidity) < LIQUIDITY.index(settings.min_liquidity):
-        return False
+        return "liquidity"
     for attr, values in (("collection", settings.collections), ("model", settings.models), ("backdrop", settings.backdrops), ("pattern", settings.patterns), ("symbol", settings.symbols)):
         if values and getattr(x, attr) not in values:
-            return False
+            return "filters"
     if settings.signature != "any" and {"yes": True, "no": False, "unknown": None}[settings.signature] is not x.signature:
-        return False
+        return "signature"
+    if not settings.include_rare and x.rare is True:
+        return "rare"
     if not value.scenarios:
-        return False
+        return "no_scenarios"
     v = value.scenarios[1]
     if any("дата отсутствует" in w for w in v.warnings):
-        return False
-    return v.profit is not None and v.roi is not None and v.profit >= settings.min_profit and v.roi >= settings.min_roi
+        return "fee_dates"
+    if v.profit is None or v.roi is None:
+        return "unknown_costs"
+    if v.profit < settings.min_profit:
+        return "below_profit"
+    if v.roi < settings.min_roi:
+        return "below_roi"
+    return None
+
+
+def eligible(value: Estimate, settings: Settings, now: datetime) -> bool:
+    return rejection(value, settings, now) is None
 
 
 @dataclass(frozen=True)

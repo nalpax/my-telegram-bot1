@@ -175,6 +175,12 @@ class Settings:
     alerts: bool = False
     interval_minutes: int = 60
     signature_discount: Decimal | None = None
+    # Delivery and analysis switches; each one changes real behaviour.
+    sound: bool = True
+    only_new: bool = True
+    error_alerts: bool = True
+    include_rare: bool = True
+    show_incomplete: bool = True
 
     def validate(self):
         for key in ("min_profit", "min_roi", "max_price"):
@@ -193,8 +199,14 @@ class Settings:
             raise ValueError("Неизвестная валюта")
         if not 1 <= len(self.display_currencies) <= 3 or len(set(self.display_currencies)) != len(self.display_currencies) or set(self.display_currencies) - set(CURRENCIES):
             raise ValueError("Выберите 1–3 разные валюты: TON, USD, RUB")
-        if not self.buy_markets or not self.sell_markets or (set(self.buy_markets) | set(self.sell_markets)) - set(MARKETS):
-            raise ValueError("Выберите площадки: portals, tonnel, mrkt")
+        # Empty lists are allowed: every marketplace can be switched off separately.
+        for name in ("buy_markets", "sell_markets"):
+            v = getattr(self, name)
+            if not isinstance(v, list) or len(set(v)) != len(v) or set(v) - set(MARKETS):
+                raise ValueError("Выберите площадки: portals, tonnel, mrkt")
+        for name in ("alerts", "sound", "only_new", "error_alerts", "include_rare", "show_incomplete"):
+            if type(getattr(self, name)) is not bool:
+                raise ValueError("Переключатель должен быть включён или выключен")
         if self.min_liquidity not in ("высокая активность", "средняя активность", "низкая активность", "недостаточно данных"):
             raise ValueError("Некорректная ликвидность")
         for name in ("collections", "models", "backdrops", "patterns", "symbols"):

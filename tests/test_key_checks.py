@@ -72,7 +72,7 @@ def test_addition_triggers_auth_check_without_host_variables(monkeypatch):
     store = Store(":memory:")
     def response(request):
         calls.append(request)
-        assert store.credential("tonnel") == secret  # Saved before verification.
+        assert store.credential("thermos") == secret  # Saved before verification.
         assert request.url.params["api_token"] == secret
         return httpx.Response(200, json={"token": jwt, "account": {"id":"PRIVATE_ACCOUNT", "total_balance":"PRIVATE_BALANCE"}})
     async def run():
@@ -92,8 +92,9 @@ def test_addition_triggers_auth_check_without_host_variables(monkeypatch):
             assert len(calls) == 1
             await app.process_update(callback(app, "market_check:tonnel"))
             assert len(calls) == 2
-        messages = [p["text"] for name, p in request.calls if name == "sendMessage"]
+        messages = [p["text"] for name, p in request.calls if name in ("sendMessage", "editMessageText")]
         assert any("Thermos подтвердил API-ключ" in t for t in messages)
+        assert store.source_state("thermos")[0] == "verified"
         dump = "\n".join(store.db.iterdump())
         for private in (secret, jwt, "PRIVATE_ACCOUNT", "PRIVATE_BALANCE"):
             assert private not in dump
@@ -116,5 +117,5 @@ def test_admin_removed_during_api_check_receives_no_result(monkeypatch):
         async with app:
             await app.process_update(callback(app, "market_key:tonnel"))
             await app.process_update(text_input(app, "SYNTHETIC-REVOKED-CHECK-KEY"))
-        assert not any("Thermos подтвердил" in p["text"] for name,p in request.calls if name == "sendMessage")
+        assert not any("Thermos подтвердил" in p["text"] for name,p in request.calls if name in ("sendMessage", "editMessageText"))
     asyncio.run(run())

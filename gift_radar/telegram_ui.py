@@ -6,12 +6,14 @@ from decimal import Decimal
 
 from telegram import (BotCommandScopeAllPrivateChats, BotCommandScopeChat, BotCommandScopeDefault,
                       InlineKeyboardButton as Button, InlineKeyboardMarkup as Keyboard, ReplyKeyboardRemove, Update)
+from telegram.error import BadRequest
 from telegram.ext import Application, ApplicationHandlerStop, CallbackQueryHandler, CommandHandler, MessageHandler, TypeHandler, filters
 from telegram.request import HTTPXRequest
 
-from .analytics import Rate
+from .analytics import INCOMPLETE, REASONS, Rate, rejection
 from .models import CURRENCIES, FEE_NAMES, MARKETS, Fee, utcnow
 from .presentation import FEE_LABELS, comparison, render_card, settings_text, text
+from .sources import TITLES
 from .storage import listing_key
 from .security import contains_secret, erase_input, is_admin, private_admin
 
@@ -21,15 +23,22 @@ FIELDS = {"min_profit": "💰 Мин. прибыль", "min_roi": "📈 Мин. 
           "collections": "🎁 Коллекции", "models": "🧩 Модели", "backdrops": "🎨 Фоны", "patterns": "✨ Узоры",
           "symbols": "🔣 Символы", "signature": "✍️ Подпись", "signature_discount": "✂️ Скидка подписи %",
           "buy_markets": "🛍 Площадки покупки", "sell_markets": "📤 Площадки перепродажи", "interval_minutes": "⏱ Интервал уведомлений"}
-HELP = ("Бот анализирует данные и уведомляет, покупки и кошельки не поддерживаются.\n"
-        "/settings — фильтры; /markets — доступность; /scan — просмотр аналитики; /alerts — уведомления; "
-        "/favorites — избранное; /fees — расходы по маршруту; /currency — валюты и курсы; /status — состояние.\n"
-        "/cancel — отменить ввод; /delete_me — удалить мои настройки и избранное.\n"
-        "Площадки пока не подключены: требуется подтверждённый официальный доступ. Цены активных лотов не используются вместо завершённых продаж.")
-BOT_COMMANDS = [("start", "Начало"), ("help", "Помощь"), ("settings", "Настройки"), ("markets", "Площадки"),
-                ("scan", "Просмотр аналитики"), ("alerts", "Уведомления"), ("favorites", "Избранное"),
-                ("fees", "Расходы"), ("currency", "Валюты"), ("status", "Состояние"),
-                ("cancel", "Отменить ввод"), ("id", "Мой ID")]
+# Marketplaces and the interval have their own toggles/screens; old buttons for them still work.
+FILTER_FIELDS = [k for k in FIELDS if k not in ("buy_markets", "sell_markets", "interval_minutes")]
+NOTIFY_TOGGLES = {"alerts": "Автоуведомления", "sound": "Звук", "only_new": "Только новые лоты", "error_alerts": "Ошибки подключения"}
+ANALYSIS_TOGGLES = {"signed": "Подписанные подарки", "rare": "Редкие варианты", "incomplete": "Неполные данные в поиске"}
+HELP = ("Gift Radar анализирует подарки и присылает уведомления. Покупок, продаж и переводов бот не выполняет.\n\n"
+        "🔎 Поиск — кандидаты из полученных данных, избранное, обновление данных.\n"
+        "🏪 Площадки — подключение Thermos, участие Portals, MRKT и Tonnel в анализе, покупке и перепродаже.\n"
+        "🔔 Уведомления — фоновые карточки, звук, повторы, ошибки подключения.\n"
+        "⚙️ Настройки — анализ, пороги, расходы, валюты.\n\n"
+        "/cancel — отменить ввод.")
+BOT_COMMANDS = [("start", "Главное меню"), ("markets", "Площадки"), ("scan", "Поиск"), ("alerts", "Уведомления"),
+                ("settings", "Настройки"), ("cancel", "Отменить ввод")]
+
+
+def mark(on):
+    return "✅" if on else "❌"
 
 
 def keyboard(items, width=2, *, back=None, home=False):
@@ -45,13 +54,13 @@ def keyboard(items, width=2, *, back=None, home=False):
     return Keyboard(rows)
 
 
-MENU = keyboard([("🔎 Аналитика", "scan"), ("⚙️ Настройки", "settings"), ("🏪 Площадки", "markets"),
-                 ("🔔 Уведомления", "alerts"), ("⭐ Избранное", "favorites"), ("🧾 Расходы", "fees"),
-                 ("💱 Валюты", "currency"), ("📡 Статус", "status"), ("❔ Помощь", "help")])
+MENU = keyboard([("🔎 Поиск", "search"), ("🏪 Площадки", "markets"), ("🔔 Уведомления", "alerts"), ("⚙️ Настройки", "settings")])
 
 
 def settings_parent(field):
-    return "currency" if field in ("calculation_currency", "display_currencies") else "settings"
+    if field in ("calculation_currency", "display_currencies"):
+        return "currency"
+    return "alerts" if field == "interval_minutes" else "filters"
 
 
 def input_navigation(context):
@@ -59,7 +68,8 @@ def input_navigation(context):
     if not pending:
         return keyboard([], home=True)
     kind, field = pending
-    parent = f"market:{field}" if kind.startswith("market_") else settings_parent(field) if kind == "setting" else "feesview" if kind == "fee" else "rate_quote_menu"
+    parent = ("source" if kind == "source_key" else f"market:{field}" if kind.startswith("market_") else
+              settings_parent(field) if kind == "setting" else "feesview" if kind == "fee" else "rate_quote_menu")
     return keyboard([], back=parent, home=True)
 
 
@@ -71,15 +81,15 @@ def card_buttons(gift):
     rows += [[Button("⚖️ Сравнить площадки", callback_data=f"compare:{key}")],
              [Button("🔎 Аналоги и источники", callback_data=f"evidence:{key}")],
              [Button("⭐ В избранное", callback_data=f"favorite:{key}"), Button("🙈 Скрыть лот", callback_data=f"hide:{key}")],
-             [Button("⬅️ К аналитике", callback_data="scan"), Button("🏠 Главное меню", callback_data="menu")]]
+             [Button("🔎 Поиск", callback_data="search"), Button("🏠 Главное меню", callback_data="menu")]]
     return Keyboard(rows)
 
 
-async def send_card(bot, user, value, settings, store):
+async def send_card(bot, user, value, settings, store, note=None):
     if not is_admin(user):
         raise PermissionError("Administrator access required")
     # Split on lines, never inside an HTML tag/entity. Keep each Telegram message <4096.
-    body = render_card(value, settings, store, user=user)
+    body = render_card(value, settings, store, user=user, note=note)
     chunks, current = [], ""
     for line in body.splitlines():
         if len(current) + len(line) + 1 > 3800:
@@ -91,7 +101,7 @@ async def send_card(bot, user, value, settings, store):
         if not is_admin(user):
             raise PermissionError("Administrator access revoked")
         await bot.send_message(chat_id=user, text=chunk, parse_mode="HTML", disable_web_page_preview=True,
-                               protect_content=True,
+                               protect_content=True, disable_notification=not settings.sound,
                                reply_markup=card_buttons(value.listing) if i == len(chunks)-1 else None)
 
 
@@ -105,8 +115,25 @@ class Interface:
 
     async def reply(self, update, message, markup=None):
         if not private_admin(update):
+            return None
+        return await update.effective_message.reply_text(message, reply_markup=markup, disable_web_page_preview=True, protect_content=True)
+
+    async def show(self, update, message, markup=None):
+        """Edit the pressed menu in place; formatted cards are never overwritten."""
+        if not private_admin(update):
             return
-        await update.effective_message.reply_text(message, reply_markup=markup, disable_web_page_preview=True, protect_content=True)
+        query = update.callback_query
+        origin = query.message if query else None
+        if origin is not None and getattr(origin, "text", None) is not None and not origin.entities:
+            try:
+                await query.edit_message_text(message, reply_markup=markup, disable_web_page_preview=True)
+                return
+            except BadRequest as exc:
+                if "not modified" in str(exc).lower():
+                    return  # Repeated press: the screen already shows this state.
+            except Exception as exc:
+                log.warning("menu_edit_failed category=%s", type(exc).__name__)
+        await self.reply(update, message, markup)
 
     async def register_commands(self, user, bot):
         if user in self.commands_ready or not is_admin(user):
@@ -136,85 +163,147 @@ class Interface:
         settings = self.store.settings(user)
         if cmd == "start":
             context.user_data.clear()
-            await self.reply(update, "🎁 Gift Radar — аналитический бот", ReplyKeyboardRemove())
-            await self.action("menu", update, context)
+            await self.reply(update, "🎁 Gift Radar", ReplyKeyboardRemove())
+            await self.reply(update, self.home_text(settings), MENU)
         elif cmd == "menu":
             context.user_data.clear()
-            await self.reply(update, "🎁 Gift Radar\n━━━━━━━━━━━━━━\n"
-                             "Аналитика коллекционных подарков\n\n"
-                             f"🔔 Уведомления: {'🟢 включены' if settings.alerts else '🔴 выключены'}\n"
-                             f"💱 Валюта порогов: {settings.calculation_currency}\n"
-                             "⚙️ Настройте фильтры и расходы под себя.\n\n"
-                             "⚪ Рыночные источники пока отключены.\n"
-                             "👇 Выберите раздел:", MENU)
+            await self.show(update, self.home_text(settings), MENU)
         elif cmd == "help":
-            await self.reply(update, "❔ Помощь\n━━━━━━━━━━━━━━\n" + HELP, keyboard([], home=True))
+            await self.show(update, "❔ Помощь\n━━━━━━━━━━━━━━\n" + HELP, keyboard([], back="more"))
+        elif cmd == "search":
+            listings = len(self.store.listings())
+            await self.show(update, "🔎 Поиск\n━━━━━━━━━━━━━━\n"
+                            f"Активных лотов в базе: {listings}\nПоследнее получение данных: {self.store.last_sync()}\n\n"
+                            "«Найти» показывает до 3 лучших кандидатов. «Обновить данные» запрашивает подключённые площадки сейчас.",
+                            keyboard([("▶️ Найти", "scan"), ("🔄 Обновить данные", "refresh"), ("⭐ Избранное", "favorites")], back="menu"))
+        elif cmd == "refresh":
+            await self.markets.load_flow(update, context)
         elif cmd == "settings":
-            await self.reply(update, "⚙️ Настройки\n━━━━━━━━━━━━━━\n" + settings_text(settings),
-                             keyboard([(label, f"edit:{key}") for key, label in FIELDS.items()], home=True))
+            await self.show(update, "⚙️ Настройки\n━━━━━━━━━━━━━━\n"
+                            f"Мин. прибыль {settings.min_profit} {settings.calculation_currency} · ROI от {settings.min_roi}% · "
+                            f"цена до {settings.max_price}\nРедкие: {mark(settings.include_rare)} · подписанные: {mark(settings.signature != 'no')}",
+                            keyboard([("📊 Анализ", "analysis"), ("🎯 Пороги и фильтры", "filters"), ("🧾 Расходы", "fees"),
+                                      ("💱 Валюты", "currency"), ("🛠 Дополнительно", "more")], back="menu"))
+        elif cmd == "analysis":
+            toggles = {"signed": settings.signature != "no", "rare": settings.include_rare, "incomplete": settings.show_incomplete}
+            items = [(f"{mark(toggles[k])} {label}", f"at:{k}") for k, label in ANALYSIS_TOGGLES.items()]
+            items += [(f"{self.markets.icon(m)} {TITLES[m]}", f"mt:{m}:on:a") for m in ("portals", "mrkt", "tonnel")]
+            await self.show(update, "📊 Анализ\n━━━━━━━━━━━━━━\n"
+                            "Подписанные и редкие — участвуют ли такие подарки в поиске и уведомлениях.\n"
+                            "Неполные данные — показывать ли в «Поиске» кандидатов без полного расчёта (с пометкой ⚠️). "
+                            "В уведомления они не попадают никогда.\n"
+                            "Нижний ряд — площадки в анализе (🔒 — сначала подключите доступ).",
+                            Keyboard([[Button(label, callback_data=data)] for label, data in items[:3]] +
+                                     [[Button(label, callback_data=data) for label, data in items[3:]]] +
+                                     [[Button("⬅️ Назад", callback_data="settings")]]))
+        elif cmd == "filters":
+            await self.show(update, "🎯 Пороги и фильтры\n━━━━━━━━━━━━━━\n" + settings_text(settings),
+                            keyboard([(FIELDS[key], f"edit:{key}") for key in FILTER_FIELDS], back="settings"))
+        elif cmd == "more":
+            await self.show(update, "🛠 Дополнительно\n━━━━━━━━━━━━━━\nДиагностика и редкие действия.",
+                            keyboard([("📡 Статус", "status"), ("❔ Помощь", "help"), ("🆔 Мой ID", "id"), ("🗑 Удалить мои данные", "delete_me")], back="settings"))
         elif cmd == "markets":
             await self.markets.overview(update)
         elif cmd == "id":
-            await self.reply(update, f"🆔 Твой Telegram ID: {user}\nДля управления подключениями владелец добавляет свой ID в ADMIN_IDS на хостинге.", keyboard([], home=True))
+            await self.show(update, f"🆔 Твой Telegram ID: {user}", keyboard([], back="more"))
         elif cmd == "alerts":
-            await self.reply(update, "🔔 Уведомления\n━━━━━━━━━━━━━━\n"
-                             f"{'🟢 Включены' if settings.alerts else '🔴 Выключены'}\n\nДо 3 лотов за цикл, без повторов. Неполные расчёты не отправляются.",
-                             keyboard([("🔕 Выключить" if settings.alerts else "🔔 Включить", "togglealerts")], home=True))
+            values = {k: getattr(settings, k) for k in NOTIFY_TOGGLES}
+            note = "" if settings.alerts else "\nПока выключено: фоновые карточки и сообщения об ошибках не приходят."
+            await self.show(update, "🔔 Уведомления\n━━━━━━━━━━━━━━\n"
+                            f"Фоновая проверка раз в {settings.interval_minutes} мин, до 3 карточек за раз.\n"
+                            "Только новые лоты: ✅ — один раз на лот; ❌ — ещё раз, если цена снизилась.\n"
+                            "Звук: ❌ — сообщения приходят беззвучно." + note,
+                            Keyboard([[Button(f"{mark(values[k])} {label}", callback_data=f"nt:{k}")] for k, label in NOTIFY_TOGGLES.items()] +
+                                     [[Button(f"⏱ Интервал: {settings.interval_minutes} мин", callback_data="edit:interval_minutes")],
+                                      [Button("⬅️ Назад", callback_data="menu")]]))
         elif cmd == "togglealerts":
             settings.alerts = not settings.alerts
             self.store.save_settings(user, settings)
             await self.action("alerts", update, context)
         elif cmd == "scan":
-            now = utcnow()
-            if user in self.last_scan and (now - self.last_scan[user]).total_seconds() < 30:
-                await self.reply(update, "⏳ Повторный просмотр доступен через 30 секунд.", keyboard([], home=True))
-                return
-            self.last_scan[user] = now
-            values = self.radar.analyses(user, now=now)
-            # One best target per gift in scan; compare button exposes other targets.
-            seen, chosen = set(), []
-            for value in values:
-                key = listing_key(value.listing)
-                if key not in seen:
-                    seen.add(key)
-                    chosen.append(value)
-            if not chosen:
-                await self.reply(update, "🔎 Аналитика\n━━━━━━━━━━━━━━\nНет активных данных. Автосбор площадок пока отключён. Доступен импорт разрешённого экспорта; тестовые лоты в рабочий режим не подставляются.", keyboard([], home=True))
-            for value in chosen[:3]:
-                await send_card(context.bot, user, value, settings, self.store)
-            if len(chosen) > 3:
-                await self.reply(update, f"Показаны 3 из {len(chosen)} кандидатов. Настройте площадки и используйте сравнение. /scan показывает аналитические кандидаты; фильтры прибыли применяются к уведомлениям.", keyboard([], home=True))
+            await self.scan(update, context, settings)
         elif cmd == "favorites":
             keys = self.store.marked("favorites", user)
             if not keys:
-                await self.reply(update, "⭐ Избранное\n━━━━━━━━━━━━━━\nИзбранное пусто. Сохраняйте лоты кнопкой ⭐ в карточке.", keyboard([], home=True))
+                await self.show(update, "⭐ Избранное\n━━━━━━━━━━━━━━\nИзбранное пусто. Сохраняйте лоты кнопкой ⭐ в карточке.", keyboard([], back="search"))
             for key in sorted(keys)[:20]:
                 gift = self.store.listing(key)
                 if gift:
                     await self.reply(update, f"{gift.name[:300]} · {gift.market} · {gift.price} {gift.currency} · {gift.status}",
-                                     keyboard([("🎁 Карточка", f"compare:{key}"), ("🗑 Удалить", f"unfavorite:{key}")], home=True))
+                                     keyboard([("🎁 Карточка", f"compare:{key}"), ("🗑 Удалить", f"unfavorite:{key}")]))
         elif cmd == "fees":
             context.user_data["route"] = {}
-            await self.reply(update, "🧾 Расходы · шаг 1 из 3\n━━━━━━━━━━━━━━\nВыберите площадку покупки. Для каждой пары площадок и валюты расходы отдельные.",
-                             keyboard([(m.title(), f"routebuy:{m}") for m in MARKETS], home=True))
+            await self.show(update, "🧾 Расходы · шаг 1 из 3\n━━━━━━━━━━━━━━\nВыберите площадку покупки. Для каждой пары площадок и валюты расходы отдельные.",
+                            keyboard([(m.title(), f"routebuy:{m}") for m in MARKETS], back="settings"))
         elif cmd == "currency":
-            await self.reply(update, "💱 Валюты\n━━━━━━━━━━━━━━\n"
-                             f"Пороги: {settings.calculation_currency}. Показ: {', '.join(settings.display_currencies)}.\n"
-                             "Конвертация только по сохранённому курсу с источником и временем, не старше часа. Курс влияет на показ, а сравнение продаж выполняется в исходной валюте.",
-                             keyboard([("🎯 Валюта порогов", "edit:calculation_currency"), ("👁 Валюты показа", "edit:display_currencies"), ("✏️ Курс вручную", "ratebase")], home=True))
+            await self.show(update, "💱 Валюты\n━━━━━━━━━━━━━━\n"
+                            f"Пороги: {settings.calculation_currency}. Показ: {', '.join(settings.display_currencies)}.\n"
+                            "Конвертация только по сохранённому курсу с источником и временем, не старше часа.",
+                            keyboard([("🎯 Валюта порогов", "edit:calculation_currency"), ("👁 Валюты показа", "edit:display_currencies"), ("✏️ Курс вручную", "ratebase")], back="settings"))
         elif cmd == "status":
-            await self.reply(update, "📡 Статус сервиса\n━━━━━━━━━━━━━━\n"
-                             f"Последнее получение данных: {self.store.last_sync()}\n"
-                             f"В базе активных лотов: {len(self.store.listings())}; завершённых продаж за 30 дней: {len(self.store.sales(utcnow()))}.\n"
-                             "Проверка источников выполняется фоновым циклом. Наличие процесса не подтверждает доступ к рынкам.", keyboard([], home=True))
+            access = self.radar.source.access()
+            lines = ["📡 Статус\n━━━━━━━━━━━━━━", f"Thermos: {access.icon} {access.label}",
+                     f"Последнее получение данных: {self.store.last_sync()}",
+                     f"Активных лотов: {len(self.store.listings())}; продаж за 30 дней: {len(self.store.sales(utcnow()))}."]
+            for m in ("portals", "mrkt", "tonnel"):
+                state, _, checked, _ = self.store.market_data(m)
+                lines.append(f"{TITLES[m]}: данные — {state}" + (f", проверено {checked[:16].replace('T', ' ')} UTC" if checked else ""))
+            await self.show(update, "\n".join(lines), keyboard([], back="more"))
         elif cmd == "delete_me":
-            await self.reply(update, "🗑 Удалить мои настройки, избранное и историю уведомлений?", keyboard([("🗑 Удалить", "deleteconfirm"), ("↩️ Отмена", "menu")], home=True))
+            await self.show(update, "🗑 Удалить мои настройки, избранное и историю уведомлений? Ключ Thermos и данные площадок останутся.",
+                            keyboard([("🗑 Удалить", "deleteconfirm")], back="more"))
         elif cmd == "deleteconfirm":
             self.store.delete_user(user)
             context.user_data.clear()
-            await self.reply(update, "✅ Ваши данные удалены. При следующей команде будут созданы настройки по умолчанию.", keyboard([], home=True))
+            await self.show(update, "✅ Ваши данные удалены. При следующей команде будут созданы настройки по умолчанию.", keyboard([], home=True))
         else:
             await self.reply(update, "Это действие из прежнего меню. Отправьте /start, чтобы открыть Gift Radar.", MENU)
+
+    def home_text(self, settings):
+        markets = " · ".join(f"{self.markets.icon(m)} {TITLES[m]}" for m in ("portals", "mrkt", "tonnel"))
+        return ("🎁 Gift Radar\n━━━━━━━━━━━━━━\n"
+                f"Площадки: {markets}\n"
+                f"Уведомления: {mark(settings.alerts)} {'включены' if settings.alerts else 'выключены'}")
+
+    async def scan(self, update, context, settings):
+        user = update.effective_user.id
+        now = utcnow()
+        if user in self.last_scan and (now - self.last_scan[user]).total_seconds() < 30:
+            await self.reply(update, "⏳ Повторный поиск доступен через 30 секунд.", keyboard([], back="search"))
+            return
+        self.last_scan[user] = now
+        # One best target per gift; the compare button exposes the others.
+        seen, chosen = set(), []
+        for value in self.radar.analyses(user, now=now):
+            key = listing_key(value.listing)
+            if key in seen:
+                continue
+            seen.add(key)
+            reason = rejection(value, settings, now)
+            if reason in INCOMPLETE and not settings.show_incomplete:
+                continue
+            chosen.append((value, reason))
+        if not chosen:
+            _, reasons, analysed = self.radar.evaluate(user, now)
+            lines = ["🔎 Поиск\n━━━━━━━━━━━━━━"]
+            if not analysed:
+                lines.append("Нет данных о лотах для анализа. Подключите площадки и обновите данные; автосбор через Thermos "
+                             "станет доступен после публикации метода чтения каталога. Можно загрузить разрешённый экспорт "
+                             "(Площадки → площадка → Дополнительно).")
+            else:
+                lines.append(f"Проверено лотов: {analysed}. Подходящих кандидатов нет.")
+                lines += [f"• {REASONS[r]}: {n}" for r, n in reasons.most_common(4)]
+                if reasons and set(reasons) <= INCOMPLETE and not settings.show_incomplete:
+                    lines.append("Кандидаты с неполными данными скрыты: Настройки → Анализ.")
+            await self.show(update, "\n".join(lines), keyboard([("🔄 Обновить данные", "refresh")], back="search"))
+            return
+        for value, reason in chosen[:3]:
+            note = ("✅ Подходит под пороги уведомлений" if reason is None else
+                    "⚠️ Неполные данные — не подтверждённая возможность" if reason in INCOMPLETE else
+                    f"🔍 Кандидат: {REASONS[reason]}")
+            await send_card(context.bot, user, value, settings, self.store, note=note)
+        if len(chosen) > 3:
+            await self.reply(update, f"Показаны 3 из {len(chosen)} кандидатов. Сузьте фильтры или используйте сравнение площадок.", keyboard([], back="search"))
 
     async def callback(self, update, context):
         if not private_admin(update):
@@ -223,14 +312,41 @@ class Interface:
         await query.answer()
         if not private_admin(update):
             return
-        user = update.effective_user.id
-        data = query.data
+        data = query.data or ""
         cmd, _, value = data.partition(":")
         # Leaving any input screen cancels its draft; later text must not save it.
         context.user_data.pop("awaiting", None)
+        try:
+            await self.dispatch(cmd, value, update, context)
+        except (ValueError, KeyError, IndexError, TypeError):
+            # Buttons from old messages may carry formats this version no longer understands.
+            await self.reply(update, "Эта кнопка устарела. Откройте актуальное меню.", MENU)
+
+    async def dispatch(self, cmd, value, update, context):
+        user = update.effective_user.id
         if await self.markets.callback(cmd, value, update, context):
             return
-        if cmd in ("favorite", "unfavorite", "hide", "compare", "evidence"):
+        if cmd == "nt":
+            if value not in NOTIFY_TOGGLES:
+                raise ValueError("Unknown toggle")
+            settings = self.store.settings(user)
+            setattr(settings, value, not getattr(settings, value))
+            self.store.save_settings(user, settings)
+            await self.action("alerts", update, context)
+        elif cmd == "at":
+            settings = self.store.settings(user)
+            if value == "signed":
+                # One underlying setting: the detailed choice stays in Пороги → Подпись.
+                settings.signature = "any" if settings.signature == "no" else "no"
+            elif value == "rare":
+                settings.include_rare = not settings.include_rare
+            elif value == "incomplete":
+                settings.show_incomplete = not settings.show_incomplete
+            else:
+                raise ValueError("Unknown toggle")
+            self.store.save_settings(user, settings)
+            await self.action("analysis", update, context)
+        elif cmd in ("favorite", "unfavorite", "hide", "compare", "evidence"):
             gift = self.store.listing(value)
             if not gift:
                 await self.reply(update, "Лот больше не доступен.", keyboard([], home=True))
@@ -273,14 +389,17 @@ class Interface:
                        "min_liquidity": [("Любая активность", "0"), ("Низкая", "1"), ("Средняя", "2"), ("Высокая", "3")],
                        "calculation_currency": [(x, x) for x in CURRENCIES]}
             if value in options:
-                await self.reply(update, "⚙️ Выберите значение:",
+                await self.show(update, f"{FIELDS.get(value, '⚙️ Значение')}\n━━━━━━━━━━━━━━\nВыберите значение:",
                                  keyboard([(label, f"set:{value}:{v}") for label, v in options[value]], back=settings_parent(value), home=True))
             elif value in ("buy_markets", "sell_markets", "display_currencies"):
                 await self.list_choices(update, context, value)
             elif value in FIELDS:
                 context.user_data["awaiting"] = ("setting", value)
-                hint = "Названия через запятую; - чтобы убрать ограничение." if value in ("collections", "models", "backdrops", "patterns", "symbols") else "Введите число. Для скидки подписи - означает не задана."
-                await self.reply(update, f"{FIELDS[value]}\n━━━━━━━━━━━━━━\n{hint}\n\n⬅️ Назад — отменить ввод.", input_navigation(context))
+                hint = ("Названия через запятую; - чтобы убрать ограничение." if value in ("collections", "models", "backdrops", "patterns", "symbols") else
+                        "Введите число минут от 5 до 10080." if value == "interval_minutes" else "Введите число. Для скидки подписи - означает не задана.")
+                await self.show(update, f"{FIELDS[value]}\n━━━━━━━━━━━━━━\n{hint}\n\n⬅️ Назад — отменить ввод.", input_navigation(context))
+            else:
+                raise ValueError("Unknown field")
         elif cmd == "set":
             field, raw = value.split(":",1)
             settings = self.store.settings(user)
@@ -293,7 +412,7 @@ class Interface:
                 return
             setattr(settings, field, raw)
             self.store.save_settings(user, settings)
-            await self.reply(update, "✅ Сохранено." + (" При смене валюты проверьте числовые пороги." if field == "calculation_currency" else ""),
+            await self.show(update, "✅ Сохранено." + (" При смене валюты проверьте числовые пороги." if field == "calculation_currency" else ""),
                              keyboard([], back=settings_parent(field), home=True))
         elif cmd == "listtoggle":
             field, choice = value.split(":", 1)
@@ -303,8 +422,8 @@ class Interface:
             settings = self.store.settings(user)
             old = getattr(settings, field)
             new = [x for x in old if x != choice] if choice in old else old + [choice]
-            if not new:
-                await self.reply(update, "Оставьте хотя бы одно значение.", keyboard([], back=f"edit:{field}", home=True))
+            if not new and field == "display_currencies":
+                await self.show(update, "Оставьте хотя бы одну валюту.", keyboard([], back=f"edit:{field}"))
                 return
             setattr(settings, field, new)
             self.store.save_settings(user, settings)
@@ -336,11 +455,11 @@ class Interface:
                 await self.reply(update, "Выберите маршрут расходов заново.", keyboard([("🧾 Выбрать маршрут", "fees")], home=True))
                 return
             context.user_data["awaiting"] = ("fee", value)
-            await self.reply(update, f"✏️ {FEE_LABELS[value]}\n━━━━━━━━━━━━━━\nСумма в валюте маршрута или процент с %. - означает неизвестно.\n"
+            await self.show(update, f"✏️ {FEE_LABELS[value]}\n━━━━━━━━━━━━━━\nСумма в валюте маршрута или процент с %. - означает неизвестно.\n"
                              "0 вводите только если сбор действительно не применяется. Процент продажи/вывода от цены перепродажи, прочие проценты от цены покупки. Значение будет отмечено как пользовательское.", input_navigation(context))
         elif cmd == "ratebase":
             context.user_data.pop("rate_base", None)
-            await self.reply(update, "💱 Ручной курс · шаг 1 из 3\n━━━━━━━━━━━━━━\nИсходная валюта курса:",
+            await self.show(update, "💱 Ручной курс · шаг 1 из 3\n━━━━━━━━━━━━━━\nИсходная валюта курса:",
                              keyboard([(c, f"ratequote:{c}") for c in CURRENCIES], back="currency", home=True))
         elif cmd == "ratequote":
             if value not in CURRENCIES:
@@ -353,7 +472,7 @@ class Interface:
             if value not in CURRENCIES or "rate_base" not in context.user_data:
                 return
             context.user_data["awaiting"] = ("rate", value)
-            await self.reply(update, "💱 Ручной курс · шаг 3 из 3\n━━━━━━━━━━━━━━\nВведите курс: число единиц целевой валюты за одну единицу исходной. Источник будет помечен «введён пользователем». Срок актуальности — один час.", input_navigation(context))
+            await self.show(update, "💱 Ручной курс · шаг 3 из 3\n━━━━━━━━━━━━━━\nВведите курс: число единиц целевой валюты за одну единицу исходной. Источник будет помечен «введён пользователем». Срок актуальности — один час.", input_navigation(context))
         else:
             await self.action(cmd, update, context)
 
@@ -361,21 +480,21 @@ class Interface:
         chosen = getattr(self.store.settings(update.effective_user.id), field)
         options = CURRENCIES if field == "display_currencies" else MARKETS
         parent = settings_parent(field)
-        await self.reply(update, "✅ Выбор значений\n━━━━━━━━━━━━━━\nНажимайте, чтобы включить или выключить:",
-                         keyboard([(("🟢 " if c in chosen else "⚪ ") + c, f"listtoggle:{field}:{c}") for c in options] + [("✅ Готово", parent)], back=parent, home=True))
+        await self.show(update, "✅ Выбор значений\n━━━━━━━━━━━━━━\nНажимайте, чтобы включить или выключить:",
+                         keyboard([(mark(c in chosen) + " " + c, f"listtoggle:{field}:{c}") for c in options] + [("✅ Готово", parent)], back=parent))
 
     async def route_sell_menu(self, update, context):
         if "buy" not in context.user_data.get("route", {}):
             await self.action("fees", update, context)
             return
-        await self.reply(update, "🧾 Расходы · шаг 2 из 3\n━━━━━━━━━━━━━━\nВыберите площадку перепродажи:",
+        await self.show(update, "🧾 Расходы · шаг 2 из 3\n━━━━━━━━━━━━━━\nВыберите площадку перепродажи:",
                          keyboard([(m.title(), f"routesell:{m}") for m in MARKETS], back="fees", home=True))
 
     async def route_currency_menu(self, update, context):
         if "sell" not in context.user_data.get("route", {}):
             await self.route_sell_menu(update, context)
             return
-        await self.reply(update, "🧾 Расходы · шаг 3 из 3\n━━━━━━━━━━━━━━\nВалюта расходов:",
+        await self.show(update, "🧾 Расходы · шаг 3 из 3\n━━━━━━━━━━━━━━\nВалюта расходов:",
                          keyboard([(c, f"routecurrency:{c}") for c in CURRENCIES], back="route_sell_menu", home=True))
 
     async def rate_quote_menu(self, update, context):
@@ -383,7 +502,7 @@ class Interface:
         if base not in CURRENCIES:
             await self.reply(update, "Выберите исходную валюту заново.", keyboard([("💱 Выбрать валюту", "ratebase")], back="currency", home=True))
             return
-        await self.reply(update, f"💱 Ручной курс · шаг 2 из 3\n━━━━━━━━━━━━━━\nСколько единиц целевой валюты стоит 1 {base}? Выберите целевую валюту:",
+        await self.show(update, f"💱 Ручной курс · шаг 2 из 3\n━━━━━━━━━━━━━━\nСколько единиц целевой валюты стоит 1 {base}? Выберите целевую валюту:",
                          keyboard([(c, f"ratevalue:{c}") for c in CURRENCIES if c != base], back="ratebase", home=True))
 
     async def fees_menu(self, update, context):
@@ -397,7 +516,7 @@ class Interface:
             fee = route.fees.get(name, Fee())
             lines.append(f"{FEE_LABELS[name]}: {'неизвестно' if fee.value is None else str(fee.value)+('%' if fee.percent else ' '+r['currency'])}; "
                          f"{fee.source}; дата {fee.updated_at.isoformat() if fee.updated_at else 'неизвестна'}; {'подтверждено' if fee.confirmed else 'не подтверждено площадкой'}")
-        await self.reply(update, "\n".join(lines), keyboard([("✏️ " + label, f"fee:{name}") for name, label in FEE_LABELS.items()], back="route_currency_menu", home=True))
+        await self.show(update, "\n".join(lines), keyboard([("✏️ " + label, f"fee:{name}") for name, label in FEE_LABELS.items()], back="route_currency_menu", home=True))
 
     async def input(self, update, context):
         if not private_admin(update):
@@ -409,12 +528,12 @@ class Interface:
 
     async def process_input(self, update, context):
         pending = context.user_data.get("awaiting")
-        if pending and pending[0] == "market_key":
+        if pending and pending[0] == "source_key":
             await self.markets.input(update, context)
             return
         names = [self.store.connection(market).key_env for market in MARKETS]
         if contains_secret(update.effective_message.text, names):
-            await self.reply(update, "🔒 Здесь секреты не принимаются. Для ключа выбери «Площадки» → нужную площадку → «Добавить / заменить ключ» в личном чате администратора.", input_navigation(context))
+            await self.reply(update, "🔒 Здесь секреты не принимаются. Ключ Thermos добавляется в «Площадки» → «Подключить Thermos».", input_navigation(context))
             return
         if "awaiting" not in context.user_data:
             await self.reply(update, "Выберите действие в меню.", MENU)
@@ -491,10 +610,17 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
     async def sender(user, value):
         await send_card(app.bot, user, value, store.settings(user), store)
 
+    async def notifier(user, message):
+        if not is_admin(user):
+            raise PermissionError("Administrator access required")
+        await app.bot.send_message(chat_id=user, text=message, protect_content=True, disable_web_page_preview=True,
+                                   disable_notification=not store.settings(user).sound,
+                                   reply_markup=keyboard([("🏪 Площадки", "markets")]))
+
     async def work():
         while True:
             try:
-                await radar.tick(sender)
+                await radar.tick(sender, notifier)
                 store.cleanup(utcnow(), retention_days)
             except asyncio.CancelledError:
                 raise
@@ -535,7 +661,7 @@ def build_app(token, store, radar, scan_seconds=300, retention_days=90, request=
     app = (Application.builder().token(token).request(request).get_updates_request(polling_request)
            .post_init(startup).post_stop(stop).build())
     app.add_handler(TypeHandler(Update, authorize), group=-100)
-    for name in ("start", "help", "settings", "markets", "scan", "alerts", "favorites", "fees", "currency", "status", "cancel", "delete_me", "id"):
+    for name in ("start", "help", "settings", "markets", "scan", "search", "alerts", "favorites", "fees", "currency", "status", "cancel", "delete_me", "id"):
         app.add_handler(CommandHandler(name, ui.command))
     app.add_handler(CallbackQueryHandler(ui.callback))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, ui.input))

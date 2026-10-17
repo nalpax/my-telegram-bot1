@@ -62,11 +62,12 @@ def test_commands_empty_source_and_settings():
         request = FakeTelegram()
         app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry()), request=request, polling_request=FakeTelegram())
         async with app:
-            for cmd in ("/start", "/help", "/settings", "/markets", "/scan", "/alerts", "/favorites", "/fees", "/currency", "/status"):
+            for cmd in ("/start", "/help", "/settings", "/markets", "/scan", "/search", "/alerts", "/favorites", "/fees", "/currency", "/status"):
                 await app.process_update(command(app, cmd))
-        texts = [p["text"] for name,p in request.calls if name == "sendMessage"]
-        assert any("Нет активных данных" in t for t in texts)
-        assert any("Официальный разрешённый API" in t for t in texts)
+            await app.process_update(callback(app, "filters"))
+        texts = [p["text"] for name,p in request.calls if name in SCREENS]
+        assert any("Нет данных о лотах" in t for t in texts)
+        assert any("Один ключ Thermos открывает Portals, MRKT и Tonnel" in t for t in texts)
         assert any("Минимальная чистая прибыль" in t for t in texts)
         assert not store.settings(1).alerts
         assert not any("Временная ошибка" in t for t in texts)
@@ -130,15 +131,23 @@ def test_old_shop_button_opens_new_menu():
     asyncio.run(run())
 
 
+SCREENS = ("sendMessage", "editMessageText")
+
+
+def texts(request):
+    """Everything shown to the user: new messages and menus edited in place."""
+    return [p["text"] for name, p in request.calls if name in SCREENS]
+
+
 def last_buttons(request):
-    params = next(p for name,p in reversed(request.calls) if name == "sendMessage")
+    params = next(p for name,p in reversed(request.calls) if name in SCREENS and p.get("reply_markup"))
     markup = params["reply_markup"]
     if isinstance(markup, str):
         markup = json.loads(markup)
     return [b for row in markup["inline_keyboard"] for b in row]
 
 
-@pytest.mark.parametrize("destination", ["settings", "menu"])
+@pytest.mark.parametrize("destination", ["filters", "menu"])
 def test_navigation_cancels_setting_input(destination):
     async def run():
         store = Store(":memory:")
@@ -146,7 +155,7 @@ def test_navigation_cancels_setting_input(destination):
         app = build_app("123:TEST_ONLY_TOKEN", store, Radar(store, registry()), request=request, polling_request=FakeTelegram())
         async with app:
             await app.process_update(callback(app, "edit:min_roi"))
-            assert {b["callback_data"] for b in last_buttons(request)} == {"settings", "menu"}
+            assert {b["callback_data"] for b in last_buttons(request)} == {"filters", "menu"}
             await app.process_update(callback(app, destination))
             await app.process_update(text_input(app, "999"))
         assert store.settings(1).min_roi == 10

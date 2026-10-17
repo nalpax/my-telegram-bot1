@@ -61,7 +61,7 @@ def test_new_migration_preserves_old_users(tmp_path):
     old.commit()
     old.close()
     store = Store(path)
-    assert store.db.execute("PRAGMA user_version").fetchone()[0] == 4
+    assert store.db.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
     assert store.db.execute("SELECT value FROM metadata WHERE name='test_old'").fetchone()[0] == "keep"
 
 
@@ -90,14 +90,16 @@ def test_old_environment_button_opens_direct_key_entry(monkeypatch):
             assert "awaiting" not in app.user_data[2]
             await app.process_update(callback(app, "market_env:portals", user=1))
             await app.process_update(text_input(app, "TEST_ONLY_NEVER_IN_MESSAGES", user=1))
+            # Old per-market buttons now lead to the single Thermos connection.
             assert store.connection("portals").key_env is None
-            assert store.connection("portals").has_saved_key
+            assert not store.connection("portals").has_saved_key
+            assert store.credential("thermos") == "TEST_ONLY_NEVER_IN_MESSAGES"
             await app.process_update(callback(app, "market_check:portals", user=1))
-        texts = [p["text"] for name,p in request.calls if name == "sendMessage"]
+        texts = [p["text"] for name,p in request.calls if name in ("sendMessage", "editMessageText")]
         assert any("Отправь сам API-ключ" in t for t in texts)
-        assert any("Проверка авторизации этой площадки пока недоступна" in t for t in texts)
+        assert any("Thermos отклонил ключ" in t for t in texts)  # Synthetic 401 from conftest.
         assert not any("TEST_ONLY_NEVER_IN_MESSAGES" in t for t in texts)
-        assert "needs_adapter" == store.connection("portals").diagnosis()[0]
+        assert store.source_state("thermos")[0] == "invalid"
     asyncio.run(run())
 
 

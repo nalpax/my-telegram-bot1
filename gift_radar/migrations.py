@@ -42,4 +42,13 @@ MIGRATIONS = [
     CREATE TABLE market_credentials (market TEXT PRIMARY KEY, ciphertext TEXT NOT NULL,
                                     updated_at TEXT NOT NULL);
     """,
+    """
+    CREATE TABLE sources (name TEXT PRIMARY KEY, state TEXT NOT NULL, detail TEXT NOT NULL,
+                          checked_at TEXT, verified_at TEXT);
+    CREATE TABLE market_settings (market TEXT PRIMARY KEY, enabled INTEGER NOT NULL);
+    CREATE TABLE error_notices (user_id INTEGER NOT NULL, subject TEXT NOT NULL, state TEXT NOT NULL,
+                                at TEXT NOT NULL, PRIMARY KEY(user_id, subject));
+    ALTER TABLE notifications ADD COLUMN price TEXT;
+    ALTER TABLE markets ADD COLUMN data_at TEXT;
+    """,
 ]

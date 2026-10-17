@@ -9,7 +9,7 @@ from pathlib import Path
 
 from .analytics import Rate
 from .connections import Connection
-from .credentials import CredentialVault, credential_value
+from .credentials import SOURCES, CredentialVault, credential_value
 from .migrations import MIGRATIONS
 from .models import MARKETS, Gift, Route, Settings, dumps, gift_from, instant, route_from, sale_from, utcnow
 from .security import private_file, register_secret
@@ -46,8 +46,8 @@ class Store:
             raise
         with self.db:
             for market in MARKETS:
-                self.db.execute("INSERT OR IGNORE INTO markets VALUES (?,?,?,?)",
-                                (market, "disabled", "Официальный разрешённый API не подтверждён", None))
+                self.db.execute("INSERT OR IGNORE INTO markets(market,state,detail,checked_at) VALUES (?,?,?,?)",
+                                (market, "disabled", "Данные ещё не загружались", None))
 
     def close(self):
         self.db.close()
@@ -143,12 +143,23 @@ class Store:
             raise ValueError("Invalid marker")
         return {r[0] for r in self.db.execute(f"SELECT key FROM {table} WHERE user_id=?", (user,))}
 
-    def claim_alert(self, user: int, key: str, now) -> bool:
+    def claim_alert(self, user: int, key: str, now, price=None, repeat_on_drop=False) -> bool:
         # Commit BEFORE sending. Ambiguous transport failures stay claimed: no duplicate on restart.
         self.settings(user)
+        price = None if price is None else str(price)
         with self.db:
-            cur = self.db.execute("INSERT OR IGNORE INTO notifications VALUES (?,?,'sending',?)", (user, key, now.isoformat()))
-        return cur.rowcount == 1
+            cur = self.db.execute("INSERT OR IGNORE INTO notifications VALUES (?,?,'sending',?,?)", (user, key, now.isoformat(), price))
+            if cur.rowcount == 1:
+                return True
+            if not repeat_on_drop or price is None:
+                return False
+            # Optional repeat only after a delivered alert and a strictly lower price.
+            row = self.db.execute("SELECT state,price FROM notifications WHERE user_id=? AND key=?", (user, key)).fetchone()
+            if not row or row[0] != "sent" or row[1] is None or Decimal(price) >= Decimal(row[1]):
+                return False
+            cur = self.db.execute("UPDATE notifications SET state='sending',at=?,price=? WHERE user_id=? AND key=? AND state='sent' AND price=?",
+                                  (now.isoformat(), price, user, key, row[1]))
+            return cur.rowcount == 1
 
     def finish_alert(self, user, key, state):
         with self.db:
@@ -171,14 +182,25 @@ class Store:
         return Connection(market, *(row or (None, None)), has_saved_key=saved)
 
     def credential(self, market):
-        connection = self.connection(market)
+        if market not in SOURCES:
+            raise ValueError("Invalid market")
+        connection = self.connection(market) if market in MARKETS else None
         row = self.db.execute("SELECT ciphertext FROM market_credentials WHERE market=?", (market,)).fetchone()
-        value = self.vault.decrypt(market, row[0]) if row else os.environ.get(connection.key_env) if connection.key_env else None
+        value = self.vault.decrypt(market, row[0]) if row else os.environ.get(connection.key_env) if connection and connection.key_env else None
         register_secret(value)
         return value
 
+    def has_credential(self, market):
+        return self.db.execute("SELECT 1 FROM market_credentials WHERE market=?", (market,)).fetchone() is not None
+
+    def delete_credential(self, market):
+        with self.db:
+            self.db.execute("DELETE FROM market_credentials WHERE market=?", (market,))
+
     def save_credential(self, market, value):
-        connection = self.connection(market)
+        if market not in SOURCES:
+            raise ValueError("Invalid market")
+        connection = self.connection(market) if market in MARKETS else None
         value = credential_value(value)
         # Also mask a submitted value if disk protection fails before it is saved.
         register_secret(value)
@@ -189,8 +211,9 @@ class Store:
         with self.db:
             self.db.execute("INSERT OR REPLACE INTO market_credentials VALUES (?,?,?)",
                             (market, ciphertext, utcnow().isoformat()))
-            self.db.execute("INSERT OR REPLACE INTO market_connections VALUES (?,?,?,?)",
-                            (market, None, connection.docs_url, utcnow().isoformat()))
+            if connection:
+                self.db.execute("INSERT OR REPLACE INTO market_connections VALUES (?,?,?,?)",
+                                (market, None, connection.docs_url, utcnow().isoformat()))
 
     def save_connection(self, connection):
         with self.db:
@@ -204,9 +227,60 @@ class Store:
             self.db.execute("DELETE FROM market_connections WHERE market=?", (market,))
             self.db.execute("DELETE FROM market_credentials WHERE market=?", (market,))
 
-    def set_market(self, market, state, detail):
+    def set_market(self, market, state, detail, data_ok=False):
+        # data_at changes only after real data was actually received.
+        now = utcnow().isoformat()
         with self.db:
-            self.db.execute("UPDATE markets SET state=?,detail=?,checked_at=? WHERE market=?", (state, detail, utcnow().isoformat(), market))
+            self.db.execute("UPDATE markets SET state=?,detail=?,checked_at=?,data_at=CASE WHEN ? THEN ? ELSE data_at END WHERE market=?",
+                            (state, detail, now, data_ok, now, market))
+
+    def market_data(self, market):
+        row = self.db.execute("SELECT state,detail,checked_at,data_at FROM markets WHERE market=?", (market,)).fetchone()
+        return row or ("disabled", "", None, None)
+
+    def market_counts(self, market, now=None):
+        now = now or utcnow()
+        listings = sum(1 for g in self.listings() if g.market == market)
+        sales = self.db.execute("SELECT count(*) FROM sales WHERE market=? AND sold_at>=?",
+                                (market, (now - timedelta(days=30)).isoformat())).fetchone()[0]
+        return listings, sales
+
+    def has_market_data(self, market):
+        return (self.db.execute("SELECT 1 FROM listings WHERE market=? LIMIT 1", (market,)).fetchone() is not None or
+                self.db.execute("SELECT 1 FROM sales WHERE market=? LIMIT 1", (market,)).fetchone() is not None)
+
+    def market_flag(self, market):
+        """None means never chosen: the marketplace takes part once it is available."""
+        row = self.db.execute("SELECT enabled FROM market_settings WHERE market=?", (market,)).fetchone()
+        return None if row is None else bool(row[0])
+
+    def set_market_flag(self, market, enabled):
+        if market not in MARKETS:
+            raise ValueError("Invalid market")
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO market_settings VALUES (?,?)", (market, int(bool(enabled))))
+
+    def source_state(self, name):
+        row = self.db.execute("SELECT state,detail,checked_at,verified_at FROM sources WHERE name=?", (name,)).fetchone()
+        return row or ("missing", "", None, None)
+
+    def set_source_state(self, name, state, detail, verified=False):
+        now = utcnow().isoformat()
+        with self.db:
+            self.db.execute("INSERT INTO sources VALUES (?,?,?,?,?) ON CONFLICT(name) DO UPDATE SET state=excluded.state,"
+                            "detail=excluded.detail,checked_at=excluded.checked_at,"
+                            "verified_at=CASE WHEN ? THEN excluded.checked_at ELSE CASE WHEN excluded.state='missing' THEN NULL ELSE sources.verified_at END END",
+                            (name, state, detail, now, now if verified else None, verified))
+
+    def claim_error_notice(self, user, subject, state):
+        """Return the previously notified state when it changed, else False."""
+        row = self.db.execute("SELECT state FROM error_notices WHERE user_id=? AND subject=?", (user, subject)).fetchone()
+        previous = row[0] if row else "ok"
+        if previous == state:
+            return False
+        with self.db:
+            self.db.execute("INSERT OR REPLACE INTO error_notices VALUES (?,?,?,?)", (user, subject, state, utcnow().isoformat()))
+        return previous
 
     def error(self, market, category):
         # Store categories, never response bodies, auth URLs or exception strings.
@@ -226,7 +300,7 @@ class Store:
 
     def delete_user(self, user):
         with self.db:
-            for table in ("routes", "notifications", "favorites", "hidden"):
+            for table in ("routes", "notifications", "favorites", "hidden", "error_notices"):
                 self.db.execute(f"DELETE FROM {table} WHERE user_id=?", (user,))
             self.db.execute("DELETE FROM rates WHERE user_id=?", (user,))
             self.db.execute("DELETE FROM users WHERE user_id=?", (user,))

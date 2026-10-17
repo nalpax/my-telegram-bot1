@@ -31,11 +31,11 @@ def display_money(value, currency, targets, store, now, user=0):
     return "\n".join(parts)
 
 
-def render_card(value, settings, store, now=None, user=0):
+def render_card(value, settings, store, now=None, user=0, note=None):
     now = now or utcnow()
     x = value.listing
     signature = "Есть" if x.signature is True else "Нет" if x.signature is False else "Не удалось проверить"
-    lines = ["<b>🎁 Возможный кандидат для проверки</b>",
+    lines = [f"<b>{text(note)}</b>" if note else "<b>🎁 Возможный кандидат для проверки</b>",
              f"Название: {text(x.name)}", f"Коллекция: {text(x.collection)}",
              f"Модель: {text(x.model)} · Фон: {text(x.backdrop)}",
              f"Узор: {text(x.pattern)} · Символ: {text(x.symbol)} · Номер: {text(x.serial)}",
@@ -98,5 +98,6 @@ def settings_text(s):
             f"Фоны: {', '.join(s.backdrops) or 'любые'}\nУзоры: {', '.join(s.patterns) or 'любые'}\nСимволы: {', '.join(s.symbols) or 'любые'}\n"
             f"Показ валют: {', '.join(s.display_currencies)}\n"
             f"Скидка подписи: {str(s.signature_discount)+'% (пользовательская)' if s.signature_discount is not None else 'не задана'}\n"
+            f"Редкие варианты: {'учитываются' if s.include_rare else 'исключены'}\n"
             f"Уведомления: {'включены' if s.alerts else 'выключены'}; интервал {s.interval_minutes} мин, до 3 карточек за цикл.\n"
             "Неизвестные расходы, слабые данные и устаревшие лоты блокируют уведомления.")

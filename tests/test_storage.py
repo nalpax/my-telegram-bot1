@@ -8,6 +8,7 @@ import pytest
 from gift_radar.adapters import registry, read_authorized_export
 from gift_radar.models import dumps
 from gift_radar.service import Radar
+from gift_radar.migrations import MIGRATIONS
 from gift_radar.storage import Store, listing_key
 
 
@@ -15,7 +16,7 @@ def test_sqlite_migration_idempotent(tmp_path):
     path = str(tmp_path / "test.sqlite3")
     for _ in range(2):
         store = Store(path)
-        assert store.db.execute("PRAGMA user_version").fetchone()[0] == 4
+        assert store.db.execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
         store.close()
 
 
